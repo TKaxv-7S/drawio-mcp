@@ -8,6 +8,11 @@ The original draw.io MCP server. Opens diagrams directly in the draw.io editor v
 |------|---------|
 | `src/index.js` | Single-file server (stdio transport, vanilla JS, no build step) |
 | `src/libavoid-pass.js` | Server-side libavoid edge-routing pass for `open_drawio_xml` (`routing: "libavoid"`) — parses the mxGraphModel XML, runs the vendored routing core (`AvoidRouting.computeRoutes`), writes waypoints back |
+| `src/elk-pass.js` | Server-side ELK layout pass for `open_drawio_xml` (`postLayout: "elk"`) — parses the mxGraphModel XML into the headless model, drives the drawio-elk `ElkLayout` bridge, writes geometries + edge styles back. Covered by `test/elk-pass.test.js` |
+| `src/mx-model.js` | Headless mxGraph model (cells, geometry, `getCellStyle`, the `mxPoint`/`mxConstants`/`mxUtils` globals) — the slice of mxGraph the drawio-elk bridge touches, so the bridge runs unchanged without a renderer |
+| `src/elk-engine.js` | Loads + memoizes the drawio-elk bundle (CDN via `cdn-cache.js`, indirect `eval` into the globals) |
+| `src/cdn-cache.js` | ETag-revalidated per-user disk cache for the two CDN sources (`ROUTING_CORE`, `ELK_BUNDLE`), atomic single-artifact writes |
+| `src/mermaid-elk.js` | Copy of `shared/mermaid-elk.js` (copy-shared): the Mermaid ELK layout selector behind `open_drawio_mermaid`'s `postLayout`. Covered by `test/mermaid-elk.test.js` |
 | `src/pages.js` | Local `.drawio` file page access for `list_pages`/`get_page`/`set_page` — regex-scans `<diagram>` blocks (same tag-boundary technique as `libavoid-pass.js`), decompresses/compresses per-page with `pako` as needed. Covered by `test/pages.test.js` (`npm test`) |
 | `vendor/libavoid/` | Vendored libavoid-js **node** build + `libavoid.wasm` (see its README). Loaded by path in plain Node — no inlining/base64 (that's the app server's sandbox concern) |
 
@@ -16,6 +21,12 @@ The original draw.io MCP server. Opens diagrams directly in the draw.io editor v
 ### `open_drawio_xml`
 
 Opens draw.io with native XML content. Full control over styling and positioning.
+
+**`postLayout: "elk"`** (optional, with `direction: "vertical"|"horizontal"`) runs a full ELK re-layout server-side before the URL is built — the same `ElkLayout` facade from the `drawio-elk` bundle that the editor's *Arrange ▸ Layout* menu and the app server's `postLayout` use, with the same canonical edge treatment (`ElkLayout.CANONICAL_EDGE`), so the result matches what the editor produces for the same diagram.
+
+Since there is no renderer here, `src/mx-model.js` provides the headless mxGraph slice the bridge reads and writes (model traversal, geometry, `getCellStyle` incl. draw.io's named styles — `swimlane;…` must resolve to `shape=swimlane` or containers lose their title inset). `src/elk-pass.js` parses the XML, runs the layout per `<mxGraphModel>` page, and rewrites only the cells the layout changed; everything else stays byte-identical. Node **sizes are pinned** (`applierOptions.resizeParent: false`, as on the app server): with nothing to measure label text against, the authored width/height stay authoritative and ELK lays out with them.
+
+The ~900 KB bundle is not vendored — `src/elk-engine.js` pulls it from `viewer.diagrams.net` through `src/cdn-cache.js` on first use (`DRAWIO_ELK_URL` overrides the source with a local build for testing an unreleased drawio-elk). Fails loudly, unlike routing: if the bundle can't be loaded the tool result says the layout didn't run, since an unlaid-out diagram is exactly what the caller asked to avoid. A parse problem still fails safe (the page comes back as authored).
 
 **`routing: "libavoid"`** (optional) runs an obstacle-avoiding orthogonal edge-routing pass server-side before the URL is built: vertices stay put, connectors are recomputed to route *around* shapes in clean right angles (draw.io's built-in router has no obstacle avoidance). The routing math is `AvoidRouting.computeRoutes` from the vendored `vendor/libavoid/libavoid-routing.js` — a verbatim copy of the canonical `drawio-dev js/libavoid-js/libavoid-routing.js`, identical to the app server's and the draw.io editor's. Fails safe — any parse/route issue returns the original XML unrouted.
 
@@ -28,6 +39,8 @@ Opens draw.io with CSV data converted to a diagram. Useful for org charts, but C
 ### `open_drawio_mermaid`
 
 Opens draw.io with Mermaid.js syntax. **Recommended default** — handles flowcharts, sequences, ER diagrams, Gantt charts, and more reliably.
+
+**`postLayout: "elk"`** (optional) switches a Mermaid **flowchart** to the layered ELK layout. Nothing is computed here: selecting ELK is a text transform on the source (`withElkLayout` from `shared/mermaid-elk.js` writes the `config: { layout: elk }` frontmatter), and draw.io runs the layout itself when it converts the Mermaid behind the `#create=` URL — `EditorUi.isMermaidElkFlowchart` fires and routes the parsed XML through `applyMermaidElkPostPass`. Non-flowchart types are left alone and the tool result says so (type detection is `mermaidDiagramType`, a verbatim port of drawio-dev's `getMermaidDiagramType`).
 
 ### `search_shapes`
 
@@ -67,7 +80,7 @@ These are the only tools whose arguments touch the local filesystem, so they are
 
 ## XML Reference
 
-The `open_drawio_xml` tool description is loaded at startup from `shared/xml-reference.md` (single source of truth for all prompts). The `copy-shared` script (run on `prestart` and `prepack`) copies it — plus `shared/mermaid-reference.md`, `shared/shape-search.js`, and `shared/icon-search.js` — into `src/` so the npm package is self-contained. These copies are gitignored; the `search_shapes` loader imports the helper from the local copy with a fallback to `../../shared/` for in-repo runs. (The libavoid routing core is NOT part of copy-shared — it lives in `vendor/libavoid/libavoid-routing.js`, synced from drawio-dev. The ~4.6 MB `search-index.json` is deliberately **not** copied/bundled — it is fetched at runtime; see `search_shapes` above.)
+The `open_drawio_xml` tool description is loaded at startup from `shared/xml-reference.md` (single source of truth for all prompts). The `copy-shared` script (run on `prestart` and `prepack`) copies it — plus `shared/mermaid-reference.md`, `shared/shape-search.js`, `shared/icon-search.js`, and `shared/mermaid-elk.js` — into `src/` so the npm package is self-contained. These copies are gitignored; the `search_shapes` loader imports the helper from the local copy with a fallback to `../../shared/` for in-repo runs. (The two CDN sources are NOT part of copy-shared: the libavoid routing core and the drawio-elk bundle come from `viewer.diagrams.net` through the per-user cache in `src/cdn-cache.js`, with `vendor/libavoid/libavoid-routing.js` as the routing core's last-resort fallback. The ~4.6 MB `search-index.json` is deliberately **not** copied/bundled — it is fetched at runtime; see `search_shapes` above.)
 
 ## Coding Conventions
 

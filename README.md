@@ -147,7 +147,12 @@ requests. To reduce or remove them:
 - **App Server:** build with the `VIEWER_PATH` environment variable to inline the
   viewer instead of loading it from `viewer.diagrams.net`.
 - **Tool Server:** set the `DRAWIO_BASE_URL` environment variable to a self-hosted
-  draw.io instance.
+  draw.io instance. Its two server-side passes also fetch **code** from
+  `viewer.diagrams.net` once per draw.io release and cache it per user: the libavoid
+  routing core (`routing: "libavoid"`, also primed at install time) and the
+  drawio-elk bundle (`postLayout: "elk"`, fetched on first use, overridable with
+  `DRAWIO_ELK_URL`). Not requesting those passes makes no such call; the diagram is
+  never part of one either way.
 - **Assistant Plugins:** the opt-in `url` output mode opens the diagram at
   `app.diagrams.net` (hardcoded — no `DRAWIO_BASE_URL` equivalent). Use the default
   `.drawio` output or local Desktop export instead if you need to avoid that request.
