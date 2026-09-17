@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ListToolsRequestSchema, CallToolRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import pako from "pako";
 import { routeXml } from "./libavoid-pass.js";
+import { layoutXml } from "./elk-pass.js";
 import { assertPagePath, listPageMeta, readPageXml, writePageXml } from "./pages.js";
 import { spawn } from "child_process";
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
@@ -359,12 +360,26 @@ const tools =
           enum: ["auto", "true", "false"],
           description: "Dark mode setting. Default: auto",
         },
+        postLayout:
+        {
+          type: "string",
+          enum: ["elk"],
+          description:
+            "Optional full re-layout (ELK layered flow), applied server-side before the diagram opens. The only value is \"elk\". It PLACES the vertices — your x/y coordinates then only need to express rough direction — and routes the edges as part of the layout. Set it for every directional/hierarchical diagram: flowcharts, process and state diagrams, decision trees, pipelines. Omit it when the layout carries hand-crafted meaning (swimlanes, containers, architecture, UML), which is the usual reason to place cells by hand. Node sizes are kept exactly as you declare them; only positions change (and containers resize around their laid-out children).",
+        },
+        direction:
+        {
+          type: "string",
+          enum: ["vertical", "horizontal"],
+          description:
+            "Flow direction for `postLayout: \"elk\"`: \"vertical\" (top-down, the default) or \"horizontal\" (left-to-right). Only meaningful together with `postLayout`.",
+        },
         routing:
         {
           type: "string",
           enum: ["libavoid"],
           description:
-            "Optional obstacle-avoiding orthogonal edge-routing pass (libavoid), applied server-side before the diagram opens. The only value is \"libavoid\". It keeps your vertex positions and only recomputes the connectors so they run in clean right-angle segments that route AROUND the boxes instead of cutting through them (draw.io's default router draws a straight/simple line with no obstacle avoidance). Set it for hand-placed diagrams where edges would otherwise cross shapes — architecture, network, deployment, UML, floor plans. Omit it for sparse layouts where connectors won't overlap anything.",
+            "Optional obstacle-avoiding orthogonal edge-routing pass (libavoid), applied server-side before the diagram opens. The only value is \"libavoid\". It keeps your vertex positions and only recomputes the connectors so they run in clean right-angle segments that route AROUND the boxes instead of cutting through them (draw.io's default router draws a straight/simple line with no obstacle avoidance). Set it for hand-placed diagrams where edges would otherwise cross shapes — architecture, network, deployment, UML, floor plans. Omit it for sparse layouts where connectors won't overlap anything. Treat `postLayout` and `routing` as alternatives: ELK already routes its own edges, so don't set both.",
         },
       },
       required: ["content"],
@@ -765,11 +780,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
         };
     }
 
-    // XML only: optional libavoid obstacle-avoiding edge-routing pass before
-    // the diagram is compressed into the URL. routeXml never throws — it
-    // returns the original XML if routing isn't applicable or anything fails.
+    // XML only: optional server-side passes before the diagram is compressed
+    // into the URL. ELK places the vertices, libavoid only re-routes the
+    // edges — the two are alternatives, but running both is harmless (ELK
+    // first, then the router over its positions).
+    const notes = [];
+
+    if (type === "xml" && args?.postLayout === "elk")
+    {
+      try
+      {
+        content = await layoutXml(content, { direction: args?.direction });
+      }
+      catch (error)
+      {
+        // The layout is the whole point of the request, so say it didn't run
+        // instead of quietly opening an unlaid-out diagram.
+        notes.push("NOTE: the ELK layout pass could not run (" +
+          (error instanceof Error ? error.message : String(error)) +
+          "); the diagram opened with the coordinates you supplied. " +
+          "Retry, or place the cells yourself.");
+      }
+    }
+
     if (type === "xml" && args?.routing === "libavoid")
     {
+      // routeXml never throws - it returns the original XML if routing isn't
+      // applicable or anything fails.
       content = await routeXml(content);
     }
 
@@ -783,7 +820,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
       [
         {
           type: "text",
-          text: `Draw.io Editor URL:\n${url}\n\nThe diagram has been opened in your default browser.`,
+          text: `Draw.io Editor URL:\n${url}\n\nThe diagram has been opened in your default browser.` +
+            (notes.length > 0 ? "\n\n" + notes.join("\n") : ""),
         },
       ],
     };
