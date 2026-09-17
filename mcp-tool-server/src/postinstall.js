@@ -3,15 +3,16 @@
 // the install: fetches the current libavoid-routing.js from the CDN into the
 // per-user cache dir so the first routing call doesn't pay the download.
 // Offline installs and --ignore-scripts environments are fine; the cache
-// primes on first use instead (see routing-core-cache.js). Validation here
-// is a content sniff, not an eval - installers should not execute freshly
+// primes on first use instead (see cdn-cache.js). Validation here is a
+// content sniff, not an eval - installers should not execute freshly
 // downloaded code; the runtime eval-validates before use and discards a bad
-// cache entry.
-import { loadCoreSource } from "./routing-core-cache.js";
+// cache entry. The drawio-elk bundle (postLayout) is deliberately NOT primed
+// here: ~900 KB for a pass many installs never request.
+import { loadCachedSource, ROUTING_CORE } from "./cdn-cache.js";
 
 try
 {
-  await loadCoreSource(function(src)
+  await loadCachedSource(ROUTING_CORE, function(src)
   {
     if (src.indexOf("AvoidRouting") === -1)
     {

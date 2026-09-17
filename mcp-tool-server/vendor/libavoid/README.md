@@ -23,7 +23,7 @@ Artifacts:
   libavoid-routing.js` (the same artifact the draw.io editor bundles and the
   app server loads from the CDN); copy it over when it changes there. At
   runtime `libavoid-pass.js` loads the CURRENT core through an
-  ETag-revalidated per-user disk cache (`src/routing-core-cache.js`, primed
+  ETag-revalidated per-user disk cache (`src/cdn-cache.js`, primed
   by npm postinstall, revalidated against
   `https://viewer.diagrams.net/js/libavoid-js/libavoid-routing.js` once per
   process — a 304 unless a draw.io release changed it), so routing fixes

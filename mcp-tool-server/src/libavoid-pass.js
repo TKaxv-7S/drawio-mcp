@@ -23,7 +23,7 @@ const WASM_PATH = join(__dirname, "..", "vendor", "libavoid", "libavoid.wasm");
 // js/libavoid-js/ — the same artifact the draw.io editor bundles and the app
 // server loads from the CDN). It is a plain browser script that assigns
 // globalThis.AvoidRouting. Loaded through the ETag-revalidated per-user disk
-// cache (routing-core-cache.js: primed by npm postinstall, refreshed from the
+// cache (cdn-cache.js: primed by npm postinstall, refreshed from the
 // viewer.diagrams.net CDN only when the file actually changed — a 304
 // otherwise), so routing fixes ship with draw.io releases without
 // re-vendoring here; the vendored copy is the last fallback (CDN unreachable
@@ -32,7 +32,7 @@ const WASM_PATH = join(__dirname, "..", "vendor", "libavoid", "libavoid.wasm");
 // CDN only serves the browser build of the glue, and the core is
 // deliberately compatible with the bindings both builds expose. One
 // revalidation per process (memoized like the wasm load).
-import { loadCoreSource } from "./routing-core-cache.js";
+import { loadCachedSource, ROUTING_CORE } from "./cdn-cache.js";
 
 let routingPromise = null;
 
@@ -59,11 +59,11 @@ function getRouting()
 {
   if (routingPromise == null)
   {
-    routingPromise = loadCoreSource(evalRoutingCore).then(function(src)
+    routingPromise = loadCachedSource(ROUTING_CORE, evalRoutingCore).then(function(src)
     {
       // Evaluate the returned choice: a NEWER download that failed
       // validation is evaluated (clearing the global) AFTER the cached
-      // copy loadCoreSource falls back to, so the last eval doesn't
+      // copy loadCachedSource falls back to, so the last eval doesn't
       // necessarily match the returned source. Eval is idempotent and the
       // file is tiny.
       evalRoutingCore(src);
