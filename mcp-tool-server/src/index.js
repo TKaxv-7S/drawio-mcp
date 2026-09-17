@@ -175,6 +175,22 @@ function loadIconSearch()
   return iconSearchPromise;
 }
 
+// shared/mermaid-elk.js (the Mermaid ELK layout selector), copied into src/ by
+// copy-shared like the search helpers — same local-copy-then-repo import so an
+// in-repo run works without the copy. Memoized; pure string helpers, no I/O.
+let mermaidElkPromise = null;
+
+function loadMermaidElk()
+{
+  if (!mermaidElkPromise)
+  {
+    mermaidElkPromise = import("./mermaid-elk.js")
+      .catch(function() { return import("../../shared/mermaid-elk.js"); });
+  }
+
+  return mermaidElkPromise;
+}
+
 // Longest URL the Windows shell opens reliably from a .url file:
 // the InternetShortcut handler fails with Win32 error 122 ("The data
 // area passed to a system call is too small") beyond
@@ -435,6 +451,13 @@ const tools =
           description:
             "The Mermaid.js diagram definition. " +
             "Example: 'graph TD; A-->B; B-->C;'",
+        },
+        postLayout:
+        {
+          type: "string",
+          enum: ["elk"],
+          description:
+            "Optional ELK layered layout for Mermaid FLOWCHARTS. The only value is \"elk\". draw.io's native Mermaid parser does its own layout, but it produces cramped or unbalanced output once the diagram has any structural complexity — request \"elk\" whenever ANY of these holds: >= ~20 nodes, OR >= 3 decision diamonds (`{...}` shapes), OR any feedback/back-edges (an edge pointing back to an earlier node, e.g. an error path looping to a retry), OR >= 3 distinct endpoints. The flow direction follows the flowchart code (`flowchart TD/TB` vs `LR/RL`), so there is no direction field here. Ignored for non-flowchart diagram types (sequence, class, ER, gantt, …), which lay themselves out.",
         },
         lightbox:
         {
@@ -808,6 +831,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
       // routeXml never throws - it returns the original XML if routing isn't
       // applicable or anything fails.
       content = await routeXml(content);
+    }
+
+    // Mermaid: selecting ELK is a text transform on the source — draw.io runs
+    // the layout itself when it converts the Mermaid behind the #create= URL
+    // (EditorUi.isMermaidElkFlowchart -> applyMermaidElkPostPass), so there is
+    // nothing to compute here.
+    if (type === "mermaid" && args?.postLayout === "elk")
+    {
+      try
+      {
+        const mermaidElk = await loadMermaidElk();
+
+        if (mermaidElk.isFlowchartSource(content))
+        {
+          content = mermaidElk.withElkLayout(content);
+        }
+        else
+        {
+          notes.push("NOTE: postLayout only applies to Mermaid flowcharts — " +
+            "ignored for this diagram type (" +
+            (mermaidElk.mermaidDiagramType(content) || "unknown") +
+            "), which lays itself out.");
+        }
+      }
+      catch (error)
+      {
+        notes.push("NOTE: the ELK layout selector could not be applied (" +
+          (error instanceof Error ? error.message : String(error)) +
+          "); the diagram opened with draw.io's default Mermaid layout.");
+      }
     }
 
     const url = generateDrawioUrl(content, type, { lightbox, dark });
