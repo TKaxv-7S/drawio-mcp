@@ -1,13 +1,16 @@
 import {
+  getUiCapability,
   registerAppResource,
   registerAppTool,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import pako from "pako";
 import { normalizeDiagramXml, absolutizeImageUrls, INVALID_DIAGRAM_XML_MESSAGE } from "./normalize-diagram-xml.js";
 import { buildTagMap } from "../../shared/shape-search.js";
 import { searchShapesAndIcons, DEFAULT_ICON_SERVICE_URL } from "../../shared/icon-search.js";
+import { withElkLayout, isFlowchartSource } from "../../shared/mermaid-elk.js";
 
 /**
  * Build the self-contained HTML string that renders diagrams.
@@ -1367,6 +1370,10 @@ function generateDrawioEditUrl(xml)
 //  - frontmatter + config   -> nest "layout: elk" as the first child of config
 // An explicit renderer/layout already present (old directive, or any layout key
 // in the frontmatter) is respected and left untouched.
+//
+// Canonical implementation: shared/mermaid-elk.js (withElkLayout), used by the
+// server side of this file and by the tool server. This copy lives inside the
+// self-contained app HTML, which can't import — keep the two in sync.
 function withElkRenderer(text)
 {
   if (text == null) return text;
@@ -6509,6 +6516,102 @@ function validateDiagramXml(xml)
 
 // ── Shape search ── imported from ../../shared/shape-search.js (buildTagMap, searchShapes)
 
+// ── Fallback for clients without an MCP Apps UI ──────────────────────────────
+
+/**
+ * A draw.io editor URL carrying the whole diagram in its #create= fragment —
+ * the same format the app's "Open in draw.io" button builds
+ * (generateDrawioEditUrl) and the mcp-tool-server hands back. The fragment
+ * never leaves the browser, so the diagram isn't sent anywhere by opening it.
+ *
+ * @param {string} data - draw.io XML, or Mermaid source for type "mermaid"
+ *   (the editor converts and lays that out itself).
+ * @param {"xml"|"mermaid"} type
+ * @returns {string}
+ */
+function drawioCreateUrl(data, type)
+{
+  const compressed = pako.deflateRaw(encodeURIComponent(data));
+  const base64 = btoa(Array.from(compressed, function(b)
+  {
+    return String.fromCharCode(b);
+  }).join(""));
+
+  const createObj = { type: type, compressed: true, data: base64, effect: "pop" };
+
+  return "https://app.diagrams.net/?pv=0&grid=0#create=" +
+    encodeURIComponent(JSON.stringify(createObj));
+}
+
+/**
+ * Whether the connected client declared that it renders MCP Apps UI
+ * resources — the `io.modelcontextprotocol/ui` capability carrying the app
+ * mime type. A plain MCP client (Codex CLI, a terminal agent, a script)
+ * declares nothing, gets the tool's JSON payload, and never renders the
+ * diagram at all; that's who the fallback URL is for.
+ *
+ * The declaration is the primary signal; createServer also flips a flag when
+ * the client actually fetches the app resource, which covers a host that
+ * renders through its own negotiation without declaring this capability.
+ */
+function clientDeclaresUi(server)
+{
+  try
+  {
+    const ui = getUiCapability(server.server.getClientCapabilities());
+
+    return ui != null && Array.isArray(ui.mimeTypes) &&
+      ui.mimeTypes.includes(RESOURCE_MIME_TYPE);
+  }
+  catch (e)
+  {
+    return false;
+  }
+}
+
+/**
+ * Adds an "open in draw.io" text block for clients that don't render the
+ * app, and nothing at all for the ones that do — without it those clients
+ * get a JSON payload and no diagram anywhere. The wording stays true even
+ * if the detection is wrong and the diagram did render.
+ *
+ * Everything the app does to a diagram (Mermaid conversion, the ELK
+ * postLayout, libavoid routing) happens inside it, so an XML URL carries the
+ * model's own coordinates — worth saying out loud when a layout was
+ * requested. Mermaid is handed to the editor as Mermaid and laid out there,
+ * including the ELK layout when it was requested: that one is selected in
+ * the source itself, so it survives the trip.
+ *
+ * @param {Array} content - the tool result's content blocks, appended to
+ * @param {boolean} rendersInline - whether the client renders the app
+ * @param {string} data - XML, or the Mermaid source for type "mermaid"
+ * @param {"xml"|"mermaid"} type
+ * @param {string|null} postLayout - the requested postLayout, if any
+ */
+function appendOpenUrl(content, rendersInline, data, type, postLayout)
+{
+  if (rendersInline) return;
+
+  // Mermaid carries its layout in the source, so a requested ELK layout does
+  // survive into the editor — select it before the URL is built (draw.io runs
+  // the layout when it converts the Mermaid behind the link).
+  if (type === "mermaid" && postLayout === "elk" && isFlowchartSource(data))
+  {
+    data = withElkLayout(data);
+  }
+
+  var note = "If this client doesn't show the diagram inline, open it in the " +
+    "draw.io editor (give the user this link):\n" + drawioCreateUrl(data, type);
+
+  if (type === "xml" && postLayout)
+  {
+    note += "\n\nNOTE: the layout pass runs in the inline viewer, so that " +
+      "link opens the diagram with the coordinates you supplied.";
+  }
+
+  content.push({ type: "text", text: note });
+}
+
 // ── Server ───────────────────────────────────────────────────────────────────
 
 /**
@@ -6531,6 +6634,10 @@ export function createServer(html, options = {})
   const server = new McpServer({ name: "drawio-mcp-app", version: "1.0.0" });
 
   const resourceUri = "ui://drawio/mcp-app.html";
+
+  // Set once this session's client fetches the app resource — see
+  // clientDeclaresUi / appendOpenUrl.
+  let uiResourceRead = false;
 
   registerAppTool(
     server,
@@ -6654,9 +6761,13 @@ export function createServer(html, options = {})
         var mermaidPayload = { mermaid: mermaid };
         if (postLayout) mermaidPayload.postLayout = postLayout;
         mermaidPayload._buildId = buildId;
-        return {
-          content: [{ type: "text", text: JSON.stringify(mermaidPayload) }],
-        };
+
+        var mermaidContent = [{ type: "text", text: JSON.stringify(mermaidPayload) }];
+
+        appendOpenUrl(mermaidContent, clientDeclaresUi(server) || uiResourceRead,
+          mermaid, "mermaid", postLayout);
+
+        return { content: mermaidContent };
       }
 
       // XML path: normalize, validate
@@ -6702,6 +6813,10 @@ export function createServer(html, options = {})
 
         content.push({ type: "text", text: messages.join("\n\n") });
       }
+
+      // The absolutized XML, so image URLs resolve in the editor too.
+      appendOpenUrl(content, clientDeclaresUi(server) || uiResourceRead,
+        xmlPayload.xml, "xml", postLayout);
 
       return { content: content };
     }
@@ -6785,6 +6900,10 @@ export function createServer(html, options = {})
     { mimeType: RESOURCE_MIME_TYPE },
     async function()
     {
+      // Only a client that renders the app fetches its HTML — a second
+      // signal next to the declared capability (see clientDeclaresUi).
+      uiResourceRead = true;
+
       return {
         contents:
         [
