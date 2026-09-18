@@ -3,8 +3,8 @@
 // Two things need a model server-side: the drawio-elk bridge (ElkLayout /
 // ElkAdapter / ElkApplier), which is written against mxGraph — it walks a
 // model, reads resolved cell styles and writes geometries and styles back —
-// and edge-parents.js, which runs mxGraphModel's own updateEdgeParent over a
-// generated diagram. The editor hands the bridge a real Graph; here there is
+// and normalize-model.js, which repairs a generated diagram with
+// mxGraphModel's own updateEdgeParents and friends. The editor hands the bridge a real Graph; here there is
 // no renderer, so this module provides the slice of mxGraph those passes
 // actually touch — nothing more:
 //
@@ -781,4 +781,229 @@ MxGraph.prototype.resetEdge = function(cell)
 MxGraph.prototype.isCellMovable = function()
 {
   return true;
+};
+
+// ─── Normalization (mirrors Graph.prototype.normalizeModel) ──────
+
+// drawio's transparentBounds cells keep their geometry pinned at (0,0,0,0) —
+// their rendered box is derived from their children — so no bounds pass may
+// touch them. Same check the drawio-elk bridge makes (raw style token).
+MxGraph.prototype.isTransparentBounds = function(cell)
+{
+  var style = this.model.getStyle(cell);
+
+  if (style == null) return false;
+
+  var parts = style.split(";");
+
+  for (var i = 0; i < parts.length; i++)
+  {
+    if (parts[i] === "transparentBounds=1") return true;
+  }
+
+  return false;
+};
+
+// mxUtils.getBoundingBox: the axis-aligned box of a rectangle rotated around
+// its center.
+function rotatedBounds(rect, rotation)
+{
+  var rad = rotation * Math.PI / 180;
+  var cos = Math.cos(rad);
+  var sin = Math.sin(rad);
+  var cx = rect.x + rect.width / 2;
+  var cy = rect.y + rect.height / 2;
+
+  var corners = [
+    [rect.x, rect.y], [rect.x + rect.width, rect.y],
+    [rect.x + rect.width, rect.y + rect.height], [rect.x, rect.y + rect.height],
+  ];
+
+  var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+  for (var i = 0; i < corners.length; i++)
+  {
+    var dx = corners[i][0] - cx;
+    var dy = corners[i][1] - cy;
+    var x = cx + dx * cos - dy * sin;
+    var y = cy + dy * cos + dx * sin;
+
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+/**
+ * mxGraph.getBoundingBoxFromGeometry reduced to the case the normalization
+ * needs: sibling vertices with their own (non-relative) geometry, in their
+ * parent's coordinate frame. Offsets and a `rotation` style are honored, as
+ * in the original; edges, relative children and stroke widths are not part
+ * of this box.
+ *
+ * @param {Array<MxCell>} cells
+ * @returns {{x: number, y: number, width: number, height: number}|null}
+ */
+MxGraph.prototype.getBoundingBoxFromGeometry = function(cells)
+{
+  var result = null;
+
+  for (var i = 0; i < cells.length; i++)
+  {
+    if (!this.model.isVertex(cells[i])) continue;
+
+    var geo = this.model.getGeometry(cells[i]);
+
+    if (geo == null || geo.relative) continue;
+
+    var bbox = { x: geo.x, y: geo.y, width: geo.width, height: geo.height };
+
+    if (geo.offset != null)
+    {
+      bbox.x += geo.offset.x;
+      bbox.y += geo.offset.y;
+    }
+
+    var rotation = parseFloat(this.getCellStyle(cells[i])["rotation"]);
+
+    if (!isNaN(rotation) && rotation !== 0)
+    {
+      bbox = rotatedBounds(bbox, rotation);
+    }
+
+    if (result == null)
+    {
+      result = bbox;
+    }
+    else
+    {
+      var right = Math.max(result.x + result.width, bbox.x + bbox.width);
+      var bottom = Math.max(result.y + result.height, bbox.y + bbox.height);
+
+      result.x = Math.min(result.x, bbox.x);
+      result.y = Math.min(result.y, bbox.y);
+      result.width = right - result.x;
+      result.height = bottom - result.y;
+    }
+  }
+
+  return result;
+};
+
+/**
+ * Repairs the structural mistakes a generated diagram tends to carry, without
+ * touching what the author expressed. Port of Graph.prototype.normalizeModel
+ * (drawio-dev, behind the desktop CLI's --normalize), so a diagram that goes
+ * through an MCP server and one that goes through the desktop CLI are
+ * repaired the same way. See shared/normalize-model.js for the reasoning.
+ *
+ * @param {MxCell} [root] - model root to normalize (defaults to the model root)
+ * @returns {Object} counts per step: {edgeParents, edgeGeometries, containers}
+ */
+MxGraph.prototype.normalizeModel = function(root)
+{
+  var model = this.getModel();
+  root = (root != null) ? root : model.getRoot();
+
+  var result = { edgeParents: 0, edgeGeometries: 0, containers: 0 };
+  var graph = this;
+  var edges = [];
+
+  var collectEdges = function(cell)
+  {
+    var childCount = model.getChildCount(cell);
+
+    for (var i = 0; i < childCount; i++)
+    {
+      var child = model.getChildAt(cell, i);
+
+      if (model.isEdge(child))
+      {
+        edges.push({ edge: child, parent: model.getParent(child) });
+      }
+
+      collectEdges(child);
+    }
+  };
+
+  collectEdges(root);
+
+  model.beginUpdate();
+
+  try
+  {
+    model.updateEdgeParents(root);
+
+    for (var i = 0; i < edges.length; i++)
+    {
+      if (model.getParent(edges[i].edge) !== edges[i].parent)
+      {
+        result.edgeParents++;
+      }
+
+      if (model.getGeometry(edges[i].edge) == null)
+      {
+        var edgeGeo = new MxGeometry();
+        edgeGeo.relative = true;
+        model.setGeometry(edges[i].edge, edgeGeo);
+        result.edgeGeometries++;
+      }
+    }
+
+    var growContainers = function(cell)
+    {
+      var childCount = model.getChildCount(cell);
+
+      for (var i = 0; i < childCount; i++)
+      {
+        growContainers(model.getChildAt(cell, i));
+      }
+
+      if (!model.isVertex(cell) || childCount === 0 ||
+        graph.isTransparentBounds(cell))
+      {
+        return;
+      }
+
+      var geo = model.getGeometry(cell);
+
+      if (geo == null || geo.relative) return;
+
+      // Child geometry is relative to this cell's origin, so the children's
+      // bounding box is directly comparable to its size.
+      var children = [];
+
+      for (var j = 0; j < childCount; j++)
+      {
+        children.push(model.getChildAt(cell, j));
+      }
+
+      var bounds = graph.getBoundingBoxFromGeometry(children);
+
+      if (bounds == null) return;
+
+      var width = Math.max(geo.width, bounds.x + bounds.width);
+      var height = Math.max(geo.height, bounds.y + bounds.height);
+
+      if (width > geo.width || height > geo.height)
+      {
+        geo = geo.clone();
+        geo.width = width;
+        geo.height = height;
+        model.setGeometry(cell, geo);
+        result.containers++;
+      }
+    };
+
+    growContainers(root);
+  }
+  finally
+  {
+    model.endUpdate();
+  }
+
+  return result;
 };

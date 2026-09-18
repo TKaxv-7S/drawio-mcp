@@ -175,20 +175,20 @@ function loadIconSearch()
   return iconSearchPromise;
 }
 
-// shared/edge-parents.js (mxGraphModel's updateEdgeParents over a generated
-// diagram), copied into src/ by copy-shared — same local-copy-then-repo
+// shared/normalize-model.js (the model repairs the desktop CLI's --normalize
+// also applies), copied into src/ by copy-shared — same local-copy-then-repo
 // import as the other shared helpers. Memoized; pure string in, string out.
-let edgeParentsPromise = null;
+let normalizePromise = null;
 
-function loadEdgeParents()
+function loadNormalize()
 {
-  if (!edgeParentsPromise)
+  if (!normalizePromise)
   {
-    edgeParentsPromise = import("./edge-parents.js")
-      .catch(function() { return import("../../shared/edge-parents.js"); });
+    normalizePromise = import("./normalize-model.js")
+      .catch(function() { return import("../../shared/normalize-model.js"); });
   }
 
-  return edgeParentsPromise;
+  return normalizePromise;
 }
 
 // shared/mermaid-elk.js (the Mermaid ELK layout selector), copied into src/ by
@@ -821,25 +821,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
 
     const notes = [];
 
-    // XML: file every edge at the nearest common ancestor of its terminals,
-    // the way the editor's model maintains it. LLM XML parks edges on the
-    // layer, which renders fine but lays out wrong — an edge whose terminals
-    // sit inside a container is read in the wrong coordinate frame
-    // (jgraph/drawio-mcp#64). Normalizing here, before any pass, keeps the
-    // layout itself free of hierarchy side effects. Never throws: the
-    // normalizer leaves a page it can't parse exactly as it was.
+    // XML: repair the model before any pass sees it — edges to the nearest
+    // common ancestor of their terminals (LLM XML parks them on the layer,
+    // which renders fine but lays out wrong, jgraph/drawio-mcp#64), a
+    // geometry for edges written without one (they don't render at all), and
+    // containers grown around children they would clip. Same repairs as the
+    // desktop CLI's --normalize, and doing them here keeps the layout itself
+    // free of hierarchy side effects. Never throws: the normalizer leaves a
+    // page it can't parse exactly as it was.
     if (type === "xml")
     {
       try
       {
-        const mod = await loadEdgeParents();
+        const mod = await loadNormalize();
 
-        content = mod.normalizeEdgeParents(content).xml;
+        content = mod.normalizeDiagram(content).xml;
       }
       catch (error)
       {
         // Structurally the diagram is still what the LLM sent - open it.
-        console.error("[edge-parents] normalization skipped: " +
+        console.error("[normalize] skipped: " +
           (error instanceof Error ? error.message : String(error)));
       }
     }

@@ -2,7 +2,7 @@
 //
 // Both passes that touch a generated diagram server-side - the ELK layout
 // (mcp-tool-server/src/elk-pass.js) and the edge-parent normalization
-// (edge-parents.js) - need the same thing: read the cell tree out of the XML,
+// (normalize-model.js) - need the same thing: read the cell tree out of the XML,
 // work on it through the headless mxGraph model (mx-model.js), and write back
 // ONLY what changed, leaving every other byte of the document alone.
 //

@@ -11,7 +11,7 @@ import { normalizeDiagramXml, absolutizeImageUrls, INVALID_DIAGRAM_XML_MESSAGE }
 import { buildTagMap } from "../../shared/shape-search.js";
 import { searchShapesAndIcons, DEFAULT_ICON_SERVICE_URL } from "../../shared/icon-search.js";
 import { withElkLayout, isFlowchartSource } from "../../shared/mermaid-elk.js";
-import { normalizeEdgeParents } from "../../shared/edge-parents.js";
+import { normalizeDiagram } from "../../shared/normalize-model.js";
 
 /**
  * Build the self-contained HTML string that renders diagrams.
@@ -6783,15 +6783,17 @@ export function createServer(html, options = {})
         };
       }
 
-      // Edges belong to the nearest common ancestor of their terminals, the
-      // way the editor's model maintains it. LLM XML parks them on the layer,
-      // which renders fine but lays out wrong: ELK reads an edge's
-      // coordinates in the frame of the node containing it, so a connector
-      // between two cells inside one container escapes that container
-      // (jgraph/drawio-mcp#64). Fixing it here, before the payload goes
-      // anywhere, keeps the layout pass free of hierarchy side effects — and
-      // the open-in-draw.io URL carries the corrected diagram too.
-      normalizedXml = normalizeEdgeParents(normalizedXml).xml;
+      // Repair the model before the payload goes anywhere: edges to the
+      // nearest common ancestor of their terminals (LLM XML parks them on the
+      // layer, which renders fine but lays out wrong — ELK reads an edge in
+      // the frame of the node containing it, so a connector between two cells
+      // inside one container escapes it, jgraph/drawio-mcp#64), a geometry
+      // for edges written without one (they don't render at all), and
+      // containers grown around children they would clip. Same repairs as the
+      // desktop CLI's --normalize; doing them here keeps the layout pass free
+      // of hierarchy side effects, and the open-in-draw.io URL carries the
+      // corrected diagram too.
+      normalizedXml = normalizeDiagram(normalizedXml).xml;
 
       var xmlPayload = { xml: absolutizeImageUrls(normalizedXml) };
       if (postLayout) xmlPayload.postLayout = postLayout;

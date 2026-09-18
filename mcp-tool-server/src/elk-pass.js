@@ -15,7 +15,7 @@
 //     stay authoritative and ELK lays out with them — the same setting the
 //     app server uses
 //   - the cell hierarchy is NOT touched: filing edges at their nearest common
-//     ancestor is edge-parent normalization's job (shared/edge-parents.js),
+//     ancestor is the normalization pass's job (shared/normalize-model.js),
 //     which runs before this pass, not a side effect of laying out
 //   - every cell the layout didn't change stays byte-identical in the output
 

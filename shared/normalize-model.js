@@ -1,4 +1,4 @@
-// Edge-parent normalization for generated diagrams.
+// Model normalization for generated diagrams.
 //
 // An mxGraph edge belongs to the nearest common ancestor of its terminals:
 // two cells inside one container are connected by an edge that is a child of
@@ -18,11 +18,19 @@
 // the diagram before anything else touches it is, and it is exactly what the
 // editor would have done to the same file.
 //
-// So this runs mxGraphModel's own updateEdgeParents over the parsed model
-// (mx-model.js carries the ports) and writes only the reparented edges back.
-// It needs no layout engine, changes nothing else, and is idempotent: a
-// diagram whose edges already sit at their nearest common ancestor comes back
-// byte-identical.
+// Two more mistakes travel with the same diagrams and are repaired in the
+// same pass (the full list lives in mx-model.js's normalizeModel, a port of
+// drawio-dev's Graph.normalizeModel behind the desktop CLI's --normalize, so
+// a diagram repaired here and one repaired by the CLI come out the same):
+//
+//   - an edge written without a geometry is silently not rendered at all;
+//     the standard relative geometry brings it back
+//   - a container whose child reaches past its bounds draws that child
+//     outside the box; the container is grown to contain it — never shrunk,
+//     and no child is moved, so deliberate breathing room survives
+//
+// The pass needs no layout engine, changes nothing else, and is idempotent: a
+// diagram that is already in this shape comes back byte-identical.
 //
 // One deliberate difference from the editor: a reparented edge's `<mxCell>`
 // element stays where it is in the document instead of being moved to the end
@@ -33,19 +41,19 @@
 import { transformPages } from "./mx-xml.js";
 
 /**
- * Files every edge of a diagram at the nearest common ancestor of its
- * terminals, translating the edge geometry into that parent's frame.
+ * Normalizes every page of a diagram: edges at the nearest common ancestor of
+ * their terminals (geometry translated into that parent's frame), a geometry
+ * for edges written without one, and containers grown around children they
+ * would otherwise clip.
  *
  * @param {string} xml - mxGraphModel or mxfile XML
  * @returns {{xml: string, changed: number}} the normalized XML and the number
- *   of edges that were reparented
+ *   of cells that were rewritten
  */
-export function normalizeEdgeParents(xml)
+export function normalizeDiagram(xml)
 {
   return transformPages(xml, function(graph)
   {
-    var model = graph.getModel();
-
-    model.updateEdgeParents(model.getRoot());
+    graph.normalizeModel();
   });
 }
