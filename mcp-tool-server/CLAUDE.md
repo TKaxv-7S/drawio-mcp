@@ -106,3 +106,11 @@ npm start
 ```
 
 Published as `@drawio/mcp` on npm. Run with `npx @drawio/mcp`.
+
+## Releasing
+
+Bump `version` in `package.json`, commit, then run the **Publish Tool Server** workflow (`.github/workflows/publish-tool-server.yml`) — `gh workflow run publish-tool-server.yml`, or with `-f dry_run=true` to pack and verify without publishing. It runs the tests, refuses a version that is already on the registry, and publishes through **npm Trusted Publishing**: the registry trusts the workflow's OIDC identity, so there is no npm token in the repo or on a laptop, nothing expires, no 2FA prompt, and npm attaches a provenance attestation automatically.
+
+This matters beyond convenience: the account's 2FA is `auth-and-writes`, so a local `npm publish` demands an OTP (recovery codes are rejected for writes), and npm is removing direct-publish access from granular tokens in January 2027.
+
+The trust is registered on npmjs.com (Package settings → Publishing access → Trusted publisher) against the repository **and the workflow filename** — renaming `publish-tool-server.yml` breaks publishing until it is updated there too.

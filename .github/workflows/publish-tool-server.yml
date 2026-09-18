@@ -1,0 +1,89 @@
+name: Publish Tool Server
+
+# Publishes mcp-tool-server to npm as @drawio/mcp via npm Trusted Publishing:
+# the registry trusts this workflow's OIDC identity, so there is no token in
+# the repo, nothing to expire and no 2FA prompt — and npm attaches a
+# provenance attestation automatically.
+#
+# One-time setup on npmjs.com (Package settings > Publishing access > Trusted
+# publisher): GitHub Actions, repository `jgraph/drawio-mcp`, workflow file
+# `publish-tool-server.yml`, no environment. Renaming this file breaks the
+# trust — update it there as well.
+#
+# The version published is whatever `mcp-tool-server/package.json` says; bump
+# and commit it first. Publishing an existing version fails the run early
+# instead of erroring at the registry.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Pack and verify, but do not publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write # required for Trusted Publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: mcp-tool-server
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      # Trusted Publishing needs npm >= 11.5.1; Node 22 ships an older npm.
+      # No registry-url / NODE_AUTH_TOKEN here on purpose — a token-shaped
+      # .npmrc would take precedence over the OIDC exchange.
+      - name: Update npm
+        run: npm install -g npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      - name: Check the version is new
+        id: version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if npm view "@drawio/mcp@$version" version > /dev/null 2>&1; then
+            echo "::error::@drawio/mcp@$version is already on the registry — bump the version first."
+            exit 1
+          fi
+
+          echo "Publishing @drawio/mcp@$version"
+
+      # prepack runs copy-shared, so the shared references and helpers land in
+      # src/ before the tarball is built (see mcp-tool-server/CLAUDE.md).
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish
+
+      - name: Pack only (dry run)
+        if: ${{ inputs.dry_run }}
+        run: npm publish --dry-run
+
+      - name: Summary
+        run: |
+          {
+            echo "### @drawio/mcp@${{ steps.version.outputs.version }}"
+            echo
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Dry run — nothing was published."
+            else
+              echo "Published to https://www.npmjs.com/package/@drawio/mcp/v/${{ steps.version.outputs.version }}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
