@@ -84,7 +84,7 @@ dropping `/mcp*` takes production down.
 | MCP Server URL | `https://mcp.draw.io/mcp` |
 | Transport | Streamable HTTP |
 | Authentication | None. The server holds no accounts and no user data, so there is no OAuth, no UserInfo endpoint and no reviewer credentials to supply. |
-| Custom UI | None declared. The inline viewer is MCP-UI (`ui://`), which is what Claude renders; ChatGPT's Apps SDK uses `openai/outputTemplate` and is not implemented, so no content security policy is required. Clients without an MCP Apps UI get an `app.diagrams.net/#create=` link in a second text block. |
+| Custom UI | Yes — ChatGPT renders the MCP-UI (`ui://`) resource inline, streaming animation and viewer toolbar included (verified in the desktop app). Content security policy: `https://viewer.diagrams.net` (viewer, ELK, Mermaid and libavoid scripts), `https://app.diagrams.net` (favicon, the shape images the viewer resolves against that base, and the "Open in draw.io" target), `https://icons.diagrams.net` (images for icon-service shapes). `github.com` appears only as the help button's link target, not as a fetch. Clients without an MCP Apps UI get an `app.diagrams.net/#create=` link in a second text block. |
 | Domain verification | see §2 |
 
 Before Scan Tools: confirm `DEBUG` is **not** set in the production Worker
@@ -120,11 +120,11 @@ commands/agents, no live-artifact instructions.
 
 | # | Prompt | Expected behaviour | Expected result |
 |---|---|---|---|
-| 1 | "Create a flowchart for a user login flow with a password-reset branch." | `create_diagram` with `mermaid` (`flowchart TD`), `postLayout: "elk"` once the flow branches | Rendered diagram plus an `app.diagrams.net/#create=` link on clients without an MCP Apps UI |
-| 2 | "Draw an AWS architecture diagram: CloudFront → S3, API Gateway → Lambda → DynamoDB, with the official AWS icons." | `search_shapes` for the AWS icons first, then `create_diagram` with XML using the returned `style` strings | Diagram using AWS shape styles, editable in draw.io |
-| 3 | "Turn this into an editable draw.io diagram: `sequenceDiagram\n  Alice->>Bob: Hello\n  Bob-->>Alice: Hi`" | `create_diagram` with `mermaid`, no `postLayout` (sequence diagrams lay themselves out) | draw.io sequence diagram matching the source |
+| 1 | "Use draw.io to create a flowchart for a user login flow, including the password-reset branch." | `create_diagram` with `mermaid` (`flowchart TD`), `postLayout: "elk"` once the flow branches | Rendered diagram plus an `app.diagrams.net/#create=` link on clients without an MCP Apps UI |
+| 2 | "Use draw.io to draw an AWS architecture diagram: CloudFront → S3, API Gateway → Lambda → DynamoDB, with the official AWS icons." | `search_shapes` for the AWS icons first, then `create_diagram` with XML using the returned `style` strings | Diagram using AWS shape styles, editable in draw.io |
+| 3 | "Use draw.io to turn this into an editable diagram: `sequenceDiagram\n  Alice->>Bob: Hello\n  Bob-->>Alice: Hi`" | `create_diagram` with `mermaid`, no `postLayout` (sequence diagrams lay themselves out) | draw.io sequence diagram matching the source |
 | 4 | "Make an ER diagram for a bookstore: customers, orders, books." | `create_diagram` with `mermaid` (`erDiagram`) | ER diagram with the three entities and their relationships |
-| 5 | "Here is my network topology XML — the connectors cut through the boxes, clean them up." | `create_diagram` with the user's `xml` and `routing: "libavoid"` | Same vertex positions, orthogonal connectors routed around the shapes |
+| 5 | "Use draw.io to place Web, Cache and DB as three boxes side by side and connect Web to DB — the connector must route around the Cache box, not through it." | `create_diagram` with the user's `xml` and `routing: "libavoid"` | Same vertex positions, orthogonal connectors routed around the shapes |
 
 No test accounts, credentials or fixture data are required — every case runs
 against the public endpoint anonymously.
@@ -152,6 +152,7 @@ residency requirements, and support/legal terms are global.
 > Initial submission. The server is anonymous — no sign-in, no accounts, no user
 > data stored; sessions live in memory for five minutes. Reviewers need no
 > credentials: every test case runs against `https://mcp.draw.io/mcp` as-is.
+> Prompts should name draw.io so the plugin is invoked.
 
 ## 4. After submission
 
@@ -173,9 +174,11 @@ review and a new publish.
   still flag the bundled shell commands. So: MCP-only through review round one,
   skill in the next version once the listing is live — that version needs its own
   review and publish anyway.
-- **No ChatGPT widget.** Inline rendering in ChatGPT would need an Apps SDK
-  `openai/outputTemplate` component next to the existing MCP-UI resource. Without
-  it the tool result is text plus the `app.diagrams.net` link.
+- **Prompts have to name draw.io.** In ChatGPT the plugin does not reliably
+  trigger on "create a flowchart …" alone; "use draw.io to create a flowchart …"
+  does. Test-case prompts are worded that way, since a reviewer who types them
+  verbatim would otherwise see nothing happen. Starter prompts are exempt: the
+  composer sends them with the `@draw.io` mention attached.
 - **Portable manifest.** `plugins/codex/drawio` uses the `.codex-plugin/plugin.json`
   compatibility layout. OpenAI's current recommendation is a root `plugin.json`
   with the Agent Plugins schema and the OpenAI settings under
