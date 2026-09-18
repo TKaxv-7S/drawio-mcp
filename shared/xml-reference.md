@@ -42,6 +42,7 @@ Pick a `(col, row)` for each node. Don't think about centers or exact gaps — t
 - **Match the language of labels to the user's language** — if the user writes in German, French, Japanese, etc., all diagram labels, titles, and annotations should be in that same language.
 - **Group related nodes, and surface a hub when edges converge** — put nodes that belong together inside a container or swimlane, and keep external actors (users, files, third-party systems) outside implementation containers. When many edges converge on one area or cross several groups, route them through a single hub/gateway node (a registry, broker, event log, …) instead of drawing every low-level dependency across the canvas — fewer crossings, clearer contract.
 - **Encode secondary detail in node text, not edges** — draw an edge only when the relationship itself carries meaning; push incidental detail into the node label so the connector layer stays readable.
+- **File each edge at the innermost container holding BOTH endpoints** — `parent="<container_id>"` when both ends sit in the same container (at any nesting depth), `parent="1"` when one end is outside all containers. Auto-layout reads an edge's coordinates in its parent's frame, so an edge parked further out than its endpoints is laid out in the wrong place. Details under [Nested architecture containers](#nested-architecture-containers-cloud-infra-network-topologies).
 
 ## Common styles
 
@@ -242,8 +243,7 @@ For diagrams with **nested groupings** — VPC → Availability Zone → EC2 ins
 **Rules:**
 - Every container is a `swimlane` with `startSize=24` (title area at the top).
 - Child cells set `parent="<container_id>"` and use coordinates **relative to their parent** (origin 0,0 is the parent's top-left, below the title).
-- Edges between cells in **different** containers must have `parent="1"` (not a container) — otherwise they render inside the container and get clipped.
-- Edges between cells in the **same** container may stay on `parent="1"` too: the MCP servers file every edge at the nearest common ancestor of its terminals before the diagram is used, exactly as the editor's model does. When you write a `.drawio` file directly instead (no MCP server in the loop) and it will be auto-laid-out, set that parent yourself — the innermost container holding both endpoints — otherwise the connector lays out in the wrong frame.
+- **An edge belongs to the innermost container that holds BOTH of its endpoints.** Walk up from both ends until you reach a container that contains both: two cells in the same subnet → that subnet; a web tier and a database tier inside one region → that region; anything with one endpoint outside all containers → `parent="1"`, the layer. This is the rule the draw.io editor's own model maintains, and auto-layout reads an edge's coordinates in its parent's frame, so an edge filed too far out lands in the wrong place.
 - For industry-specific icons (AWS/Azure/GCP logos, Cisco equipment, etc.), call `search_shapes` to get the exact `style` string and substitute it into a regular vertex — the container structure stays the same.
 
 ```xml

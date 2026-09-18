@@ -359,6 +359,8 @@ Every diagram must have this structure:
 - Cell `id="0"` is the root layer
 - Cell `id="1"` is the default parent layer
 - All diagram elements use `parent="1"` unless using multiple layers
+- **Cells inside a container** use `parent="<container_id>"` and coordinates relative to that container
+- **Edges belong to the innermost container that holds BOTH endpoints** — same container (at any nesting depth) → that container's id; one end outside every container → `parent="1"`. An auto-layout reads an edge's coordinates in its parent's frame, so an edge parked further out than its endpoints is laid out in the wrong place
 
 (The example above uses an XML comment only to point out where cells go — never emit comments in real output; see [XML well-formedness](#critical-xml-well-formedness).)
 
