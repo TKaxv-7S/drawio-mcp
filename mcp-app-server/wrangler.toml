@@ -10,7 +10,8 @@ workers_dev = false
 routes = [
   { pattern = "mcp.draw.io/mcp*", zone_name = "draw.io" },
   { pattern = "mcp.draw.io/carousel/*", zone_name = "draw.io" },
-  { pattern = "mcp.draw.io/.well-known/*", zone_name = "draw.io" }
+  { pattern = "mcp.draw.io/.well-known/*", zone_name = "draw.io" },
+  { pattern = "mcp.draw.io/demo/*", zone_name = "draw.io" }
 ]
 
 # OpenAI plugin-directory domain verification token, served verbatim at
