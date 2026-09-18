@@ -27,6 +27,8 @@
       "Skills"
     ],
     "websiteURL": "https://www.drawio.com",
+    "privacyPolicyURL": "https://www.drawio.com/trust/",
+    "termsOfServiceURL": "https://www.drawio.com/trust/terms-of-use/",
     "brandColor": "#F08705",
     "composerIcon": "./assets/drawio-logo.svg",
     "logo": "./assets/drawio-logo.svg",
