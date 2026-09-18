@@ -175,6 +175,22 @@ function loadIconSearch()
   return iconSearchPromise;
 }
 
+// shared/edge-parents.js (mxGraphModel's updateEdgeParents over a generated
+// diagram), copied into src/ by copy-shared — same local-copy-then-repo
+// import as the other shared helpers. Memoized; pure string in, string out.
+let edgeParentsPromise = null;
+
+function loadEdgeParents()
+{
+  if (!edgeParentsPromise)
+  {
+    edgeParentsPromise = import("./edge-parents.js")
+      .catch(function() { return import("../../shared/edge-parents.js"); });
+  }
+
+  return edgeParentsPromise;
+}
+
 // shared/mermaid-elk.js (the Mermaid ELK layout selector), copied into src/ by
 // copy-shared like the search helpers — same local-copy-then-repo import so an
 // in-repo run works without the copy. Memoized; pure string helpers, no I/O.
@@ -803,11 +819,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) =>
         };
     }
 
+    const notes = [];
+
+    // XML: file every edge at the nearest common ancestor of its terminals,
+    // the way the editor's model maintains it. LLM XML parks edges on the
+    // layer, which renders fine but lays out wrong — an edge whose terminals
+    // sit inside a container is read in the wrong coordinate frame
+    // (jgraph/drawio-mcp#64). Normalizing here, before any pass, keeps the
+    // layout itself free of hierarchy side effects. Never throws: the
+    // normalizer leaves a page it can't parse exactly as it was.
+    if (type === "xml")
+    {
+      try
+      {
+        const mod = await loadEdgeParents();
+
+        content = mod.normalizeEdgeParents(content).xml;
+      }
+      catch (error)
+      {
+        // Structurally the diagram is still what the LLM sent - open it.
+        console.error("[edge-parents] normalization skipped: " +
+          (error instanceof Error ? error.message : String(error)));
+      }
+    }
+
     // XML only: optional server-side passes before the diagram is compressed
     // into the URL. ELK places the vertices, libavoid only re-routes the
     // edges — the two are alternatives, but running both is harmless (ELK
     // first, then the router over its positions).
-    const notes = [];
 
     if (type === "xml" && args?.postLayout === "elk")
     {
