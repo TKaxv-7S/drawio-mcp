@@ -6878,7 +6878,9 @@ export function createServer(html, options = {})
           readOnlyHint: true,
           destructiveHint: false,
           idempotentHint: true,
-          openWorldHint: false,
+          // The local index is supplemented live from the draw.io icon
+          // service, so the tool does reach the public internet.
+          openWorldHint: true,
         },
         _meta:
         {
