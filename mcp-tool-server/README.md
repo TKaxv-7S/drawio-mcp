@@ -159,6 +159,8 @@ Opens the draw.io editor with XML content.
 | `direction` | string | No | Flow direction for `postLayout`: `"vertical"` (default) or `"horizontal"` |
 | `routing` | string | No | `"libavoid"` reroutes connectors around shapes (obstacle-avoiding orthogonal routing) before opening, leaving positions untouched |
 
+Edges are filed at the nearest common ancestor of their terminals on every call, the way the draw.io editor maintains its own model — you can keep writing `parent="1"` on every edge, and containers still lay out correctly.
+
 `postLayout` and `routing` are alternatives: ELK places the vertices *and* routes the edges, libavoid only fixes the connectors of a layout you placed yourself. Both run on the server before the diagram is compressed into the URL; the diagram itself still never leaves your machine (it travels in the URL fragment). The ELK pass loads the `drawio-elk` bundle from the draw.io CDN on first use and caches it per user, so the first layout after an update pays a one-off download.
 
 ### `open_drawio_csv`

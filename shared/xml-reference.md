@@ -243,6 +243,7 @@ For diagrams with **nested groupings** — VPC → Availability Zone → EC2 ins
 - Every container is a `swimlane` with `startSize=24` (title area at the top).
 - Child cells set `parent="<container_id>"` and use coordinates **relative to their parent** (origin 0,0 is the parent's top-left, below the title).
 - Edges between cells in **different** containers must have `parent="1"` (not a container) — otherwise they render inside the container and get clipped.
+- Edges between cells in the **same** container may stay on `parent="1"` too: the MCP servers file every edge at the nearest common ancestor of its terminals before the diagram is used, exactly as the editor's model does. When you write a `.drawio` file directly instead (no MCP server in the loop) and it will be auto-laid-out, set that parent yourself — the innermost container holding both endpoints — otherwise the connector lays out in the wrong frame.
 - For industry-specific icons (AWS/Azure/GCP logos, Cisco equipment, etc.), call `search_shapes` to get the exact `style` string and substitute it into a regular vertex — the container structure stays the same.
 
 ```xml

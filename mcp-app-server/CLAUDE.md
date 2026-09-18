@@ -79,6 +79,10 @@ The Worker uses **4 sharded Durable Objects** (`MCPSessionManager`) to manage al
 
 The block is only ever *appended*: the app reads the FIRST text block (`content.find`), so a host that renders but wasn't detected keeps working, and the wording stays conditional ("if this client doesn't show the diagram inline") so it can't assert something false there. XML goes into the URL as-is, so a requested `postLayout` adds a note saying the link opens the authored coordinates (that pass lives in the app). Mermaid goes in as `type: "mermaid"` and the editor converts + lays it out on open — and a requested `postLayout: "elk"` *does* survive, because it is selected in the source: `withElkLayout` from `shared/mermaid-elk.js` (the canonical copy; the browser-side `withElkRenderer` in the app HTML is the same transform, kept in sync by hand since the self-contained HTML can't import).
 
+## Edge-parent normalization
+
+Every XML diagram passes through `normalizeEdgeParents` (`shared/edge-parents.js`) right after `normalizeDiagramXml`, before the payload reaches the app. An mxGraph edge belongs to the nearest common ancestor of its terminals, and LLM XML parks every edge on the layer — which renders correctly but lays out wrong, since ELK reads an edge's coordinates in the frame of the node containing it ([#64](https://github.com/jgraph/drawio-mcp/issues/64)). Doing it here rather than inside the layout keeps `postLayout` free of hierarchy side effects, and the corrected diagram is what the viewer renders, what "Open in draw.io" exports, and what the fallback URL carries. The pass is the editor's own `mxGraphModel.updateEdgeParents`, ported in `shared/mx-model.js` and driven over the XML by `shared/mx-xml.js`; it is idempotent and rewrites nothing else.
+
 ## MCP Apps SDK Patterns
 
 - `registerAppTool` `inputSchema` uses Zod shapes (`{ key: z.string() }`), not JSON Schema objects
