@@ -103,6 +103,15 @@ Both also carry `idempotentHint: true`. Tool responses contain only the diagram
 the caller supplied, the shape styles, and the `app.diagrams.net` link — no
 personal data, no secrets, no internal identifiers.
 
+The portal recommends an `outputSchema`. `search_shapes` has one in the repo
+(`{ shapes: [{style, w, h, title}] }`, returned as `structuredContent` beside the
+existing text block) but it is **deliberately undeployed**: the reviewer works
+from the `Scan Tools` snapshot, so the live tool definitions must not move during
+review. Deploy it once the plugin is approved and published — that is a new
+version with its own review anyway. `create_diagram` keeps none: its result is
+the rendered view plus a link, and a host that surfaces `structuredContent`
+instead of the app would put a raw XML blob in the chat.
+
 ### Skills — not in v1
 
 Left out of the first submission (see §5). When it is added later, the bundle is

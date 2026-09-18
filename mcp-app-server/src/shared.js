@@ -6873,6 +6873,27 @@ export function createServer(html, options = {})
               "Maximum number of results to return (default: 10, max: 50)"
             ),
         },
+        // Declaring this obliges the handler to return structuredContent that
+        // validates against it — the SDK checks every result. The text block
+        // carrying the same JSON stays for clients that ignore it.
+        outputSchema:
+        {
+          shapes: z
+            .array(
+              z.object(
+              {
+                style: z
+                  .string()
+                  .describe("mxCell style string, usable verbatim in a style attribute"),
+                w: z.number().describe("Default width in pixels"),
+                h: z.number().describe("Default height in pixels"),
+                title: z.string().describe("Shape name"),
+              })
+            )
+            .describe(
+              "Matching shapes, best match first — empty when nothing matched the query."
+            ),
+        },
         annotations:
         {
           readOnlyHint: true,
@@ -6898,11 +6919,13 @@ export function createServer(html, options = {})
         {
           return {
             content: [{ type: "text", text: "No shapes found for query: " + query }],
+            structuredContent: { shapes: [] },
           };
         }
 
         return {
           content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
+          structuredContent: { shapes: results },
         };
       }
     );
