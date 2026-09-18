@@ -396,6 +396,30 @@ export default
       });
     }
 
+    // Domain verification for the OpenAI plugin directory: the submission
+    // portal fetches this path on the MCP host and expects the bare token and
+    // nothing else — no JSON, no list, no second token. The token itself is
+    // public, so it lives in OPENAI_APPS_CHALLENGE (wrangler var or secret);
+    // without it we keep 404ing, which is what the portal sees pre-verification.
+    if (url.pathname === "/.well-known/openai-apps-challenge")
+    {
+      const token = env.OPENAI_APPS_CHALLENGE;
+
+      if (!token)
+      {
+        return new Response("Not Found", { status: 404 });
+      }
+
+      return new Response(token,
+      {
+        headers:
+        {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+
     // Only serve /mcp
     if (url.pathname !== "/mcp")
     {
