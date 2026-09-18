@@ -25,4 +25,6 @@ catch (e)
   // CDN unreachable or the path isn't in a release yet - fine either way.
 }
 
-process.exit(0);
+// Let pending fetch handles drain: forcing an immediate exit can crash libuv
+// on Windows (nodejs/node#56645).
+process.exitCode = 0;
