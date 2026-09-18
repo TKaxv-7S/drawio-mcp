@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { layoutXml } from "../src/elk-pass.js";
 import { getElkBridge } from "../src/elk-engine.js";
-import { installMxGlobals, MxCell, MxGraphModel, MxGraph } from "../src/mx-model.js";
+import { installMxGlobals, MxCell, MxGraphModel, MxGraph } from "../../shared/mx-model.js";
 
 // The layout tests drive the real drawio-elk bundle (CDN, then the per-user
 // cache). Without it there is nothing meaningful to assert, so they skip

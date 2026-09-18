@@ -1,14 +1,18 @@
-// Headless mxGraph model for the server-side ELK layout pass.
+// Headless mxGraph model for the servers' diagram passes.
 //
-// The drawio-elk bridge (ElkLayout / ElkAdapter / ElkApplier) is written
-// against mxGraph: it walks a model, reads resolved cell styles and writes
-// geometries and styles back. The editor and the app server hand it a real
-// Graph; the tool server has no renderer, so this module provides the slice
-// of mxGraph the bridge actually touches — nothing more:
+// Two things need a model server-side: the drawio-elk bridge (ElkLayout /
+// ElkAdapter / ElkApplier), which is written against mxGraph — it walks a
+// model, reads resolved cell styles and writes geometries and styles back —
+// and edge-parents.js, which runs mxGraphModel's own updateEdgeParent over a
+// generated diagram. The editor hands the bridge a real Graph; here there is
+// no renderer, so this module provides the slice of mxGraph those passes
+// actually touch — nothing more:
 //
 //   model   getGeometry/setGeometry, getStyle/setStyle, isVertex/isEdge,
 //           isVisible, getChildCount/getChildAt, getParent, getTerminal,
-//           getEdgeCount/getEdgeAt/getEdges, beginUpdate/endUpdate
+//           getEdgeCount/getEdgeAt/getEdges, beginUpdate/endUpdate, plus the
+//           ancestry/reparenting set updateEdgeParent needs (getRoot,
+//           getOrigin, isAncestor, getNearestCommonAncestor, add)
 //   graph   getModel, getDefaultParent, getCellStyle, getLabel, resetEdge,
 //           isCellMovable
 //   globals mxPoint, mxConstants, mxUtils
@@ -171,6 +175,45 @@ MxGeometry.prototype.getTerminalPoint = function(isSource)
   return isSource ? this.sourcePoint : this.targetPoint;
 };
 
+// mxGeometry.translate. mxGeometry.TRANSLATE_CONTROL_POINTS is true in
+// mxGraph, so the waypoints move with the geometry; a relative geometry's
+// x/y are a position ON the edge, not a coordinate, and stay put.
+MxGeometry.prototype.translate = function(dx, dy)
+{
+  dx = parseFloat(dx);
+  dy = parseFloat(dy);
+
+  if (!this.relative)
+  {
+    this.x = parseFloat(this.x) + dx;
+    this.y = parseFloat(this.y) + dy;
+  }
+
+  if (this.sourcePoint != null)
+  {
+    this.sourcePoint.x = parseFloat(this.sourcePoint.x) + dx;
+    this.sourcePoint.y = parseFloat(this.sourcePoint.y) + dy;
+  }
+
+  if (this.targetPoint != null)
+  {
+    this.targetPoint.x = parseFloat(this.targetPoint.x) + dx;
+    this.targetPoint.y = parseFloat(this.targetPoint.y) + dy;
+  }
+
+  if (this.points != null)
+  {
+    for (var i = 0; i < this.points.length; i++)
+    {
+      if (this.points[i] != null)
+      {
+        this.points[i].x = parseFloat(this.points[i].x) + dx;
+        this.points[i].y = parseFloat(this.points[i].y) + dy;
+      }
+    }
+  }
+};
+
 MxGeometry.prototype.setTerminalPoint = function(point, isSource)
 {
   if (isSource) this.sourcePoint = point;
@@ -199,10 +242,11 @@ export function MxGraphModel(root)
 {
   this.root = root;
   this.updateLevel = 0;
-  // Cells whose geometry or style the layout changed - the write-back only
-  // touches these, so everything else stays byte-identical in the XML.
+  // Cells whose geometry, style or parent a pass changed - the write-back
+  // only touches these, so everything else stays byte-identical in the XML.
   this.changedGeometry = new Set();
   this.changedStyle = new Set();
+  this.changedParent = new Set();
 }
 
 MxGraphModel.prototype.getGeometry = function(cell)
@@ -210,12 +254,57 @@ MxGraphModel.prototype.getGeometry = function(cell)
   return (cell != null) ? cell.geometry : null;
 };
 
+// A write that changes nothing is not a change: updateEdgeParent always
+// hands over a translated clone, and a converged layout re-run writes the
+// same numbers back. Comparing by value keeps those out of the dirty set, so
+// the write-back leaves the element (and its formatting) alone.
+function pointEquals(a, b)
+{
+  if (a == null || b == null) return a == b;
+
+  return a.x === b.x && a.y === b.y;
+}
+
+function geometryEquals(a, b)
+{
+  if (a == null || b == null) return a == b;
+
+  if (a.x !== b.x || a.y !== b.y || a.width !== b.width ||
+    a.height !== b.height || !!a.relative !== !!b.relative)
+  {
+    return false;
+  }
+
+  if (!pointEquals(a.offset, b.offset) ||
+    !pointEquals(a.sourcePoint, b.sourcePoint) ||
+    !pointEquals(a.targetPoint, b.targetPoint))
+  {
+    return false;
+  }
+
+  var pa = a.points || [];
+  var pb = b.points || [];
+
+  if (pa.length !== pb.length) return false;
+
+  for (var i = 0; i < pa.length; i++)
+  {
+    if (!pointEquals(pa[i], pb[i])) return false;
+  }
+
+  return true;
+}
+
 MxGraphModel.prototype.setGeometry = function(cell, geometry)
 {
   if (cell != null)
   {
+    if (!geometryEquals(cell.geometry, geometry))
+    {
+      this.changedGeometry.add(cell);
+    }
+
     cell.geometry = geometry;
-    this.changedGeometry.add(cell);
   }
 
   return geometry;
@@ -309,6 +398,237 @@ MxGraphModel.prototype.getEdges = function(cell, incoming, outgoing, includeLoop
   }
 
   return result;
+};
+
+// mxGraphModel.getRoot: the model root, or the topmost ancestor of `cell`.
+MxGraphModel.prototype.getRoot = function(cell)
+{
+  var root = cell || this.root;
+
+  if (cell != null)
+  {
+    while (cell != null)
+    {
+      root = cell;
+      cell = this.getParent(cell);
+    }
+  }
+
+  return root;
+};
+
+// ─── Ancestry + reparenting (mxGraphModel, ports for updateEdgeParent) ──
+
+MxGraphModel.prototype.isAncestor = function(parent, child)
+{
+  while (child != null && child != parent)
+  {
+    child = this.getParent(child);
+  }
+
+  return child == parent;
+};
+
+// The absolute origin of a cell: the summed geometry offsets of its vertex
+// ancestors. Recursive, like mxGraphModel.getOrigin.
+MxGraphModel.prototype.getOrigin = function(cell)
+{
+  var result;
+
+  if (cell != null)
+  {
+    result = this.getOrigin(this.getParent(cell));
+
+    if (!this.isEdge(cell))
+    {
+      var geo = this.getGeometry(cell);
+
+      if (geo != null)
+      {
+        result.x += geo.x;
+        result.y += geo.y;
+      }
+    }
+  }
+  else
+  {
+    result = new MxPoint();
+  }
+
+  return result;
+};
+
+// mxGraphModel.getNearestCommonAncestor, without mxCellPath: walk up from
+// the shallower cell and return the first STRICT ancestor of the other that
+// is not the root itself (mxGraph expresses both conditions through the cell
+// path prefix and its `parent != null` check).
+MxGraphModel.prototype.getNearestCommonAncestor = function(cell1, cell2)
+{
+  if (cell1 == null || cell2 == null) return null;
+
+  var depth = function(cell, model)
+  {
+    var n = 0;
+
+    while (cell != null) { cell = model.getParent(cell); n++; }
+
+    return n;
+  };
+
+  // Ties keep cell1, as mxGraph's length comparison does.
+  var cell = (depth(cell1, this) <= depth(cell2, this)) ? cell1 : cell2;
+  var other = (cell === cell1) ? cell2 : cell1;
+
+  while (cell != null)
+  {
+    var parent = this.getParent(cell);
+
+    if (parent != null && cell !== other && this.isAncestor(cell, other))
+    {
+      return cell;
+    }
+
+    cell = parent;
+  }
+
+  return null;
+};
+
+// mxGraphModel.add, reduced to what reparenting needs: move the child to the
+// end of the new parent's children.
+MxGraphModel.prototype.add = function(parent, child, index)
+{
+  if (parent == null || child == null || parent === child) return child;
+
+  var previous = this.getParent(child);
+
+  if (previous != null)
+  {
+    var at = previous.children.indexOf(child);
+
+    if (at >= 0) previous.children.splice(at, 1);
+  }
+
+  child.parent = parent;
+  parent.children.splice((index != null) ? index : parent.children.length,
+    0, child);
+  this.changedParent.add(child);
+
+  return child;
+};
+
+// draw.io sets mxGraphModel.ignoreRelativeEdgeParent = false (Graph.js), so
+// only the SOURCE side climbs out of relative children. Kept as a flag to
+// stay readable against the original.
+MxGraphModel.prototype.ignoreRelativeEdgeParent = false;
+
+/**
+ * mxGraphModel.updateEdgeParent: files the edge at the nearest common
+ * ancestor of its terminals (the parent of the source for a self-loop),
+ * translating the edge's geometry into the new parent's frame. No-op when
+ * the edge already sits there, when a terminal is outside `root`, or when
+ * the ancestor is a layer the edge isn't already inside.
+ *
+ * @param {MxCell} edge
+ * @param {MxCell} root - the model root (mxGraph passes the layout root)
+ */
+MxGraphModel.prototype.updateEdgeParent = function(edge, root)
+{
+  var source = this.getTerminal(edge, true);
+  var target = this.getTerminal(edge, false);
+  var cell = null;
+
+  // Uses the first non-relative descendants of the source terminal
+  while (source != null && !this.isEdge(source) &&
+    source.geometry != null && source.geometry.relative)
+  {
+    source = this.getParent(source);
+  }
+
+  // Uses the first non-relative descendants of the target terminal
+  while (target != null && this.ignoreRelativeEdgeParent &&
+    !this.isEdge(target) && target.geometry != null &&
+    target.geometry.relative)
+  {
+    target = this.getParent(target);
+  }
+
+  if (this.isAncestor(root, source) && this.isAncestor(root, target))
+  {
+    if (source == target)
+    {
+      cell = this.getParent(source);
+    }
+    else
+    {
+      cell = this.getNearestCommonAncestor(source, target);
+    }
+
+    if (cell != null && (this.getParent(cell) != this.root ||
+      this.isAncestor(cell, edge)) && this.getParent(edge) != cell)
+    {
+      var geo = this.getGeometry(edge);
+
+      if (geo != null)
+      {
+        var origin1 = this.getOrigin(this.getParent(edge));
+        var origin2 = this.getOrigin(cell);
+
+        var dx = origin2.x - origin1.x;
+        var dy = origin2.y - origin1.y;
+
+        geo = geo.clone();
+        geo.translate(-dx, -dy);
+        this.setGeometry(edge, geo);
+      }
+
+      this.add(cell, edge, this.getChildCount(cell));
+    }
+  }
+};
+
+/**
+ * mxGraphModel.updateEdgeParents: children first, then every edge connected
+ * to `cell`. The traversal order is the one the editor runs, so the edges a
+ * pass reparents end up in the same order the editor would produce.
+ *
+ * @param {MxCell} cell
+ * @param {MxCell} [root]
+ */
+MxGraphModel.prototype.updateEdgeParents = function(cell, root)
+{
+  // Gets the topmost node of the hierarchy
+  root = root || this.getRoot(cell);
+
+  // Updates edges on children first
+  var childCount = this.getChildCount(cell);
+
+  for (var i = 0; i < childCount; i++)
+  {
+    var child = this.getChildAt(cell, i);
+    this.updateEdgeParents(child, root);
+  }
+
+  // Updates the parents of all connected edges
+  var edgeCount = this.getEdgeCount(cell);
+  var edges = [];
+
+  for (var i = 0; i < edgeCount; i++)
+  {
+    edges.push(this.getEdgeAt(cell, i));
+  }
+
+  for (var i = 0; i < edges.length; i++)
+  {
+    var edge = edges[i];
+
+    // Updates edge parent if edge and child have a common root node (does
+    // not need to be the model root node)
+    if (this.isAncestor(root, edge))
+    {
+      this.updateEdgeParent(edge, root);
+    }
+  }
 };
 
 // No events, no undo history: the bridge brackets its writes in these, and

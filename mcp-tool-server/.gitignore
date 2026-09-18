@@ -4,3 +4,6 @@ src/mermaid-reference.md
 src/shape-search.js
 src/icon-search.js
 src/mermaid-elk.js
+src/mx-model.js
+src/mx-xml.js
+src/edge-parents.js
