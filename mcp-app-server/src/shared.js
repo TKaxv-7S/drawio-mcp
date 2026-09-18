@@ -11,6 +11,7 @@ import { normalizeDiagramXml, absolutizeImageUrls, INVALID_DIAGRAM_XML_MESSAGE }
 import { buildTagMap } from "../../shared/shape-search.js";
 import { searchShapesAndIcons, DEFAULT_ICON_SERVICE_URL } from "../../shared/icon-search.js";
 import { withElkLayout, isFlowchartSource } from "../../shared/mermaid-elk.js";
+import { normalizeEdgeParents } from "../../shared/edge-parents.js";
 
 /**
  * Build the self-contained HTML string that renders diagrams.
@@ -6781,6 +6782,16 @@ export function createServer(html, options = {})
           isError: true,
         };
       }
+
+      // Edges belong to the nearest common ancestor of their terminals, the
+      // way the editor's model maintains it. LLM XML parks them on the layer,
+      // which renders fine but lays out wrong: ELK reads an edge's
+      // coordinates in the frame of the node containing it, so a connector
+      // between two cells inside one container escapes that container
+      // (jgraph/drawio-mcp#64). Fixing it here, before the payload goes
+      // anywhere, keeps the layout pass free of hierarchy side effects — and
+      // the open-in-draw.io URL carries the corrected diagram too.
+      normalizedXml = normalizeEdgeParents(normalizedXml).xml;
 
       var xmlPayload = { xml: absolutizeImageUrls(normalizedXml) };
       if (postLayout) xmlPayload.postLayout = postLayout;
