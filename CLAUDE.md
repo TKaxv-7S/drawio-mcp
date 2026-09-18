@@ -7,7 +7,7 @@ The official draw.io MCP (Model Context Protocol) server that enables LLMs to op
 - **`.claude-plugin/marketplace.json`** — Claude Code plugin marketplace manifest. Lists this repo's plugins (currently just `drawio`, sourced from `./plugins/claude-code`); plugin metadata is inherited from each plugin's own `plugin.json`. Users install with `/plugin marketplace add jgraph/drawio-mcp` then `/plugin install drawio@drawio`.
 - **`.agents/plugins/marketplace.json`** — Codex CLI plugin marketplace manifest (Codex's format: `source` object + `policy` + `category`). Lists the `drawio` plugin sourced from `./plugins/codex/drawio`; metadata is inherited from that plugin's own `.codex-plugin/plugin.json`. Users install with `codex plugin marketplace add jgraph/drawio-mcp` then `codex plugin add drawio@drawio`.
 - **`.github/plugin/marketplace.json`** — GitHub Copilot CLI plugin marketplace manifest (same schema family as Claude's, but plugin metadata is inlined in the `plugins[]` entry rather than inherited — keep it in sync with `plugins/copilot/plugin.json`). Lists the `drawio` plugin sourced from `./plugins/copilot`. Users install with `copilot plugin marketplace add jgraph/drawio-mcp` then `copilot plugin install drawio@drawio`. Copilot CLI checks this path first and falls back to `.claude-plugin/marketplace.json`.
-- **`shared/`** — Single source of truth shared by every delivery mechanism: the LLM-facing references (`xml-reference.md`, `mermaid-reference.md`, `style-reference.md`) and the shared logic both MCP servers run (`shape-search.js`, `icon-search.js`, `mermaid-elk.js`, plus the headless mxGraph stack `mx-model.js` / `mx-xml.js` / `edge-parents.js`).
+- **`shared/`** — Single source of truth shared by every delivery mechanism: the LLM-facing references (`xml-reference.md`, `mermaid-reference.md`, `style-reference.md`) and the shared logic both MCP servers run (`shape-search.js`, `icon-search.js`, `mermaid-elk.js`, plus the headless mxGraph stack `mx-model.js` / `mx-xml.js` / `normalize-model.js`).
 - **`mcp-app-server/`** — MCP App server (renders diagrams inline in chat via iframe). Hosted at `https://mcp.draw.io/mcp`. Can also be self-hosted via Node.js or Cloudflare Workers. Its `server.json` is the MCP Community Registry manifest (`io.draw/mcp` — feeds github.com/mcp and VS Code's MCP browser); publish runbook in its README.
 - **`mcp-tool-server/`** — Original MCP tool server (stdio-based, opens browser). Published as `@drawio/mcp` on npm.
 - **`project-instructions/`** — Claude Project instructions (no MCP required, no install).
@@ -27,7 +27,7 @@ Most subdirectories have their own `CLAUDE.md` with implementation details.
 - **Output**: Interactive diagram rendered inline via the draw.io viewer library
 - **Features**: Zoom, pan, layers, fullscreen, "Open in draw.io" button
 - **Clients without an MCP Apps UI** (plain MCP clients — Codex CLI, terminal agents, scripts) get an extra text block with an `app.diagrams.net/#create=` URL, since nothing would render the diagram for them otherwise. Detected from the client's declared `io.modelcontextprotocol/ui` capability, plus whether it ever fetched the app resource
-- **Edge parents are normalized** on every XML diagram before anything else sees it (`shared/edge-parents.js`): each edge is filed at the nearest common ancestor of its terminals, the way the editor's model maintains it. Without it, an edge parked on the layer between two cells inside one container lays out in the wrong coordinate frame
+- **The model is normalized** on every XML diagram before anything else sees it (`shared/normalize-model.js`, the same repairs as the desktop CLI's `--normalize`): edges filed at the nearest common ancestor of their terminals (an edge parked on the layer between two cells inside one container lays out in the wrong coordinate frame), a geometry for edges written without one (they don't render at all), and containers grown around children they would clip
 
 ### `search_shapes`
 
@@ -43,7 +43,7 @@ Most subdirectories have their own `CLAUDE.md` with implementation details.
 
 Opens the draw.io editor with XML content.
 
-Edge parents are normalized on every call (see `create_diagram` above) — the layout itself never touches the cell hierarchy.
+The model is normalized on every call (see `create_diagram` above) — the layout itself never touches the cell hierarchy.
 
 **Parameters:**
 - `content` (required): Draw.io XML content
@@ -136,7 +136,7 @@ Two canonical reference files live in `shared/` and feed every delivery mechanis
 - **`shared/xml-reference.md`** — draw.io XML generation reference: styles, edge routing, containers, layers, tags, metadata, dark mode, well-formedness rules. Consumed by `create_diagram` (mcp-app-server) and `open_drawio_xml` (mcp-tool-server).
 - **`shared/mermaid-reference.md`** — Mermaid syntax reference for all 26 supported diagram types (flowchart, sequence, class, state, ER, gantt, mindmap, timeline, quadrant, C4, architecture, radar, packet, venn, treemap, kanban, zenuml, …) plus flowchart styling (`style`, `classDef`, `linkStyle`) and the ELK layout selector for complex flowcharts. Consumed by `open_drawio_mermaid` (mcp-tool-server) and `create_diagram` (mcp-app-server).
 
-`shared/` also holds the shared *logic* both servers run: `shape-search.js` / `icon-search.js` (the `search_shapes` algorithm), `mermaid-elk.js` (the Mermaid ELK layout selector — `withElkLayout` + drawio-dev's diagram-type detection) and the headless mxGraph stack — `mx-model.js` (the slice of mxGraph the passes need, incl. `mxGraphModel.updateEdgeParents`), `mx-xml.js` (mxGraphModel XML ↔ that model, rewriting only what a pass changed) and `edge-parents.js` (the normalization both servers apply to every XML diagram). The tool server gets its copies through `copy-shared`; the app server imports them directly.
+`shared/` also holds the shared *logic* both servers run: `shape-search.js` / `icon-search.js` (the `search_shapes` algorithm), `mermaid-elk.js` (the Mermaid ELK layout selector — `withElkLayout` + drawio-dev's diagram-type detection) and the headless mxGraph stack — `mx-model.js` (the slice of mxGraph the passes need, incl. `mxGraphModel.updateEdgeParents`), `mx-xml.js` (mxGraphModel XML ↔ that model, rewriting only what a pass changed) and `normalize-model.js` (the normalization both servers apply to every XML diagram, mirroring the desktop CLI's `--normalize`). The tool server gets its copies through `copy-shared`; the app server imports them directly.
 
 The MCP servers read these files at startup and append them to the relevant tool description. The skill and project instructions reference them via GitHub URL.
 
