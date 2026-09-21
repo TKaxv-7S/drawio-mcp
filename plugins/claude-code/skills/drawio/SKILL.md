@@ -309,6 +309,7 @@ Key flags:
 - `--width` / `--height`: fit into specified dimensions (preserves aspect ratio)
 - `-a` / `--all-pages`: export all pages (PDF only)
 - `-p` / `--page-index`: select a specific page (1-based)
+- `--disable-gpu`: skip GPU initialisation — add it when a command dies with `GPU process isn't usable` (Windows remote-desktop sessions, VMs, CI runners); no convert, layout, or export path needs the GPU
 
 ### Opening the result
 
@@ -381,6 +382,7 @@ https://raw.githubusercontent.com/jgraph/drawio-mcp/main/shared/xml-reference.md
 | Diagram opens but looks blank | Missing root cells `id="0"` and `id="1"` | Ensure the basic mxGraphModel structure is complete |
 | Edges not rendering | Edge mxCell is self-closing (no child mxGeometry element) | Every edge must have `<mxGeometry relative="1" as="geometry" />` as a child element |
 | File won't open after export | Incorrect file path or missing file association | Print the absolute file path so the user can open it manually |
+| `GPU process isn't usable. Goodbye.` during convert/layout/export | Electron cannot start a GPU process — typical on Windows remote-desktop sessions, VMs, and CI runners. The `os_crypt` / `Failed to decrypt` lines printed before it are unrelated noise | Retry the same command with `--disable-gpu` added; draw.io Desktop's own `--disable-acceleration` switch has the same effect |
 | Browser opens with empty diagram in `url` mode | `cmd.exe` stripped the `#create=...` fragment | Use the `.url` temp-file workaround on Windows/WSL2 (see [Opening the URL](#opening-the-url)) — never pass the URL directly to `cmd.exe /c start` |
 | URL is too long for the browser | Very large diagram exceeds browser URL length limit | Fall back to writing the `.drawio` file and opening it locally |
 
