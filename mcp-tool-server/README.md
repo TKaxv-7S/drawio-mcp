@@ -118,6 +118,27 @@ Enable the server when prompted (or under **Cursor Settings → MCP**), then ask
 
 > **Tip:** Cursor also supports the [MCP Apps](https://modelcontextprotocol.io/docs/extensions/apps) extension, so the hosted [MCP App Server](../mcp-app-server) at `https://mcp.draw.io/mcp` works in Cursor too, rendering diagrams *inline* in chat instead of opening a browser tab. Use this stdio server if you prefer diagrams to open in the full draw.io editor.
 
+### OpenCode
+
+Add the server under the `mcp` key of `opencode.json` in your project root (or `~/.config/opencode/opencode.json` for every project):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "drawio": {
+      "type": "local",
+      "command": ["npx", "-y", "@drawio/mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+The tools are available on the next start; ask the agent to create a diagram and it opens in the draw.io editor in your browser.
+
+> **Tip:** OpenCode also loads the `drawio` *skill* (native `.drawio` files, PNG/SVG/PDF export) without any plugin wrapper — see the [plugins README](../plugins/README.md#opencode-no-plugin-needed).
+
 ### Other MCP Clients
 
 Configure your MCP client to run the server via stdio:

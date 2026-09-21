@@ -32,6 +32,23 @@ copilot plugin marketplace add jgraph/drawio-mcp
 copilot plugin install drawio@drawio
 ```
 
+## OpenCode (no plugin needed)
+
+[OpenCode](https://opencode.ai) implements the Agent Skills layout directly: it looks for `SKILL.md` files in `.opencode/skills/`, `.claude/skills/` and `.agents/skills/` (walking up from the working directory to the git root) and in their global equivalents `~/.config/opencode/skills/`, `~/.claude/skills/` and `~/.agents/skills/`. The Claude Code skill folder therefore works unchanged — no manifest, no marketplace. The skill is a single file, so one download installs it for every project:
+
+```bash
+curl -fsSL --create-dirs -o ~/.config/opencode/skills/drawio/SKILL.md \
+  https://raw.githubusercontent.com/jgraph/drawio-mcp/main/plugins/claude-code/skills/drawio/SKILL.md
+```
+
+Or, per project, from a clone of this repo:
+
+```bash
+mkdir -p .opencode/skills && cp -r plugins/claude-code/skills/drawio .opencode/skills/
+```
+
+The agent loads it through its `skill` tool whenever a request matches the skill's description (a diagram, flowchart, `.drawio` file, PNG/SVG/PDF export, …). For the MCP servers, see the OpenCode sections of the [tool server](../mcp-tool-server/README.md#opencode) and [app server](../mcp-app-server/README.md#using-with-opencode) READMEs.
+
 ## Adding a plugin for another host
 
 Support for a new assistant lands as a sibling directory at this level:

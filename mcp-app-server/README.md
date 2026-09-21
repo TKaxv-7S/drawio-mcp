@@ -58,6 +58,25 @@ Click the button above for one-click install, or add the hosted endpoint manuall
 
 Enable the server when prompted (or under **Cursor Settings → MCP**), then ask the Agent to create a diagram.
 
+### Using with OpenCode
+
+[OpenCode](https://opencode.ai) connects to the hosted endpoint as a remote MCP server. Add it under the `mcp` key of `opencode.json` in your project root (or `~/.config/opencode/opencode.json` for every project):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "drawio": {
+      "type": "remote",
+      "url": "https://mcp.draw.io/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+OpenCode has no MCP Apps UI, so nothing renders inline: `create_diagram` detects that and returns an `app.diagrams.net` link that opens the diagram in the editor instead. If you would rather have diagrams open in your browser directly (and also author them as Mermaid or CSV), use the stdio [`@drawio/mcp`](../mcp-tool-server/README.md#opencode) tool server.
+
 ## Self-Hosting
 
 If you prefer to run your own instance, you can use Node.js or deploy to Cloudflare Workers.
