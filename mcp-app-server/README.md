@@ -79,7 +79,7 @@ OpenCode has no MCP Apps UI, so nothing renders inline: `create_diagram` detects
 
 ## Self-Hosting
 
-If you prefer to run your own instance, you can use Node.js or deploy to Cloudflare Workers.
+If you prefer to run your own instance, you can use Node.js, Docker, or deploy to Cloudflare Workers.
 
 ### Installation
 
@@ -97,6 +97,17 @@ npm start
 ```
 
 The server listens on `http://localhost:3001/mcp` by default. Set the `PORT` environment variable to change the port.
+
+### Running (Docker)
+
+The [`Dockerfile`](Dockerfile) packages the same Node.js server. Build it from the **repository root**, not from this directory — at startup the server reads the shared references and the shape index from the sibling `shared/` and `shape-search/` directories:
+
+```bash
+docker build -f mcp-app-server/Dockerfile -t drawio-mcp-app .
+docker run --rm -p 3001:3001 drawio-mcp-app
+```
+
+The endpoint is `http://localhost:3001/mcp`, as with `npm start`. Pass `-e PORT=8080 -p 8080:8080` to change the port, and `-e DRAWIO_ICON_SERVICE_URL=off` to keep `search_shapes` from querying the draw.io icon service (see [Data Residency & Offline Use](../README.md#data-residency--offline-use)).
 
 ### Connecting to Claude.ai
 

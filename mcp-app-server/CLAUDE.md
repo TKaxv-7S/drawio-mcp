@@ -163,3 +163,7 @@ npm run build:worker   # Generate generated-html.js
 npm run dev:worker     # Wrangler local dev (port 8787)
 npm run deploy         # Build + deploy to Cloudflare Workers
 ```
+
+## Docker
+
+`Dockerfile` packages the Node.js entry. It must be built from the **repository root** (`docker build -f mcp-app-server/Dockerfile -t drawio-mcp-app .`) because `src/index.js` reads `../../shared/*.md` and `../../shape-search/search-index.json` at startup and `src/shared.js` imports `../../shared/*.js` — a build context of just this directory cannot see them. The root `.dockerignore` trims the context to what the `COPY` lines need (no `node_modules`, `.git`, `public/`, or the other packages). `wrangler` is a devDependency and is left out of the image (`npm ci --omit=dev`).

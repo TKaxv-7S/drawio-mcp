@@ -1,0 +1,12 @@
+# Build context for mcp-app-server/Dockerfile is the repository root (the
+# server reads ../shared and ../shape-search at startup). Keep it small: only
+# what the Dockerfile COPYs needs to be sent to the daemon.
+.git
+**/node_modules
+**/.wrangler
+mcp-app-server/src/generated-html.js
+mcp-app-server/public
+mcp-tool-server
+plugins
+project-instructions
+shape-search/node_modules
