@@ -141,7 +141,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USER }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.IMAGE }}
-          short-description: "The draw.io MCP server (create_diagram, search_shapes) for MCP Apps hosts such as Claude.ai and Cursor"
+          # Docker Hub caps this at 100 bytes and truncates silently past it.
+          short-description: "The draw.io MCP server (create_diagram, search_shapes) for MCP Apps hosts like Claude.ai and Cursor"
           readme-filepath: mcp-app-server/DOCKER_HUB.md
 
       - name: Summary
