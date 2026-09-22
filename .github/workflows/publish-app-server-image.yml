@@ -1,0 +1,159 @@
+name: Publish App Server Image
+
+# Builds mcp-app-server/Dockerfile for linux/amd64 and linux/arm64 and pushes
+# it to Docker Hub as jgraph/drawio-mcp, tagged with the version from
+# mcp-app-server/package.json and `latest`. Manual, like the tool server's npm
+# publish: bump and commit the version first, then run this workflow. A tag
+# that already exists on Docker Hub fails the run before anything is built.
+#
+# One-time setup: the repository secrets DOCKERHUB_USER and DOCKERHUB_TOKEN —
+# the same pair jgraph/docker-drawio uses — holding a Docker Hub account with
+# write access to the jgraph organisation and one of its access tokens. The
+# first push creates the jgraph/drawio-mcp repository on Docker Hub; create it
+# as public beforehand if the organisation's default visibility is private.
+#
+# The image carries the io.modelcontextprotocol.server.name label the MCP
+# registry requires before an OCI package can be listed in server.json.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and smoke-test, but do not log in or push"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: jgraph/drawio-mcp
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the version is new
+        id: version
+        run: |
+          version=$(node -p "require('./mcp-app-server/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if curl -sSf "https://hub.docker.com/v2/repositories/$IMAGE/tags/$version" > /dev/null 2>&1; then
+            echo "::error::$IMAGE:$version is already on Docker Hub — bump the version in mcp-app-server/package.json first."
+            exit 1
+          fi
+
+          echo "Publishing $IMAGE:$version"
+
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+          labels: |
+            io.modelcontextprotocol.server.name=io.draw/mcp
+            org.opencontainers.image.title=draw.io MCP App Server
+            org.opencontainers.image.description=The draw.io MCP server: create_diagram renders diagrams inline in MCP Apps hosts, search_shapes finds shapes across the draw.io libraries
+            org.opencontainers.image.vendor=JGraph Ltd
+            org.opencontainers.image.documentation=https://github.com/jgraph/drawio-mcp/blob/main/mcp-app-server/README.md
+
+      # Native-arch build first, loaded into the runner's Docker for the smoke
+      # test; its layers are cached for the multi-arch push below.
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: mcp-app-server/Dockerfile
+          load: true
+          tags: ${{ env.IMAGE }}:smoke
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: |
+          cid=$(docker run -d -p 3001:3001 "$IMAGE:smoke")
+          trap 'echo "--- container log ---"; docker logs "$cid"; docker rm -f "$cid" > /dev/null' EXIT
+
+          for i in $(seq 1 30); do
+            if curl -s -o /dev/null localhost:3001/mcp; then break; fi
+            sleep 1
+          done
+
+          response=$(curl -sS -X POST localhost:3001/mcp \
+            -H 'Content-Type: application/json' \
+            -H 'Accept: application/json, text/event-stream' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}')
+
+          if ! echo "$response" | grep -q '"name":"drawio-mcp-app"'; then
+            echo "::error::initialize did not answer as drawio-mcp-app"
+            echo "$response"
+            exit 1
+          fi
+
+          label=$(docker inspect --format '{{ index .Config.Labels "io.modelcontextprotocol.server.name" }}' "$IMAGE:smoke")
+
+          if [ "$label" != "io.draw/mcp" ]; then
+            echo "::error::io.modelcontextprotocol.server.name label is '$label', expected io.draw/mcp"
+            exit 1
+          fi
+
+          echo "initialize answered as drawio-mcp-app, MCP server-name label present"
+
+      - name: Log in to Docker Hub
+        if: ${{ !inputs.dry_run }}
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (linux/amd64, linux/arm64)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: mcp-app-server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ !inputs.dry_run }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Docker Hub's description API wants a token with Read, Write and Delete
+      # scope; a Read & Write token still pushes fine, so a failure here only
+      # leaves the Hub page stale.
+      - name: Update the Docker Hub page
+        if: ${{ !inputs.dry_run }}
+        continue-on-error: true
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USER }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE }}
+          short-description: "The draw.io MCP server (create_diagram, search_shapes) for MCP Apps hosts such as Claude.ai and Cursor"
+          readme-filepath: mcp-app-server/DOCKER_HUB.md
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${IMAGE}:${{ steps.version.outputs.version }}"
+            echo
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "Dry run — built and smoke-tested, nothing was pushed."
+            else
+              echo "Pushed \`${IMAGE}:${{ steps.version.outputs.version }}\` and \`${IMAGE}:latest\` for linux/amd64 and linux/arm64."
+              echo
+              echo "https://hub.docker.com/r/${IMAGE}/tags"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -8,6 +8,9 @@
 #   docker run --rm -p 3001:3001 drawio-mcp-app
 #
 # The endpoint is then http://localhost:3001/mcp (PORT overrides the port).
+#
+# Published to Docker Hub as jgraph/drawio-mcp (linux/amd64 + linux/arm64) by
+# .github/workflows/publish-app-server-image.yml.
 
 FROM node:24-alpine
 

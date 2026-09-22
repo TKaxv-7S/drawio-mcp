@@ -30,7 +30,7 @@ https://mcp.draw.io/mcp
 
 Add this URL as a remote MCP server in Claude.ai, Cursor, or any MCP Apps-compatible host — no installation required. On Claude.ai, draw.io is also listed in the [connector directory](https://claude.ai/directory/pending-draw-io) and can be added from there in one click. In Cursor (≥ 2.6), diagrams render inline in the Agent chat ([one-click install](https://cursor.com/en/install-mcp?name=drawio&config=eyJ1cmwiOiJodHRwczovL21jcC5kcmF3LmlvL21jcCJ9)); on older builds, use the stdio [`@drawio/mcp`](mcp-tool-server/README.md) tool server instead.
 
-You can also run the server locally via Node.js or Docker, or deploy your own instance to Cloudflare Workers.
+You can also run the server locally via Node.js or the [`jgraph/drawio-mcp`](https://hub.docker.com/r/jgraph/drawio-mcp) Docker image, or deploy your own instance to Cloudflare Workers.
 
 **Tools:**
 - **`create_diagram`** — Renders draw.io XML as an interactive diagram inline in chat
