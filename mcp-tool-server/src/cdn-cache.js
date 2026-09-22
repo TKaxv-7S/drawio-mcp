@@ -5,7 +5,9 @@
 // are consumed here verbatim: the shared libavoid routing core (the edge
 // router behind `routing: "libavoid"`) and the drawio-elk bundle (the ELK
 // engine + mxGraph bridge behind `postLayout: "elk"`) — the same files the
-// app server loads with a <script src> and the editor bundles.
+// app server loads with a <script src> and the editor bundles. The third
+// source is this repository's own shape-search/search-index.json (behind
+// `search_shapes`), served by jsDelivr straight from the main branch.
 // loadCachedSource() keeps a per-user copy of one on disk and revalidates it
 // with a conditional GET (If-None-Match against the stored ETag) once per
 // call:
@@ -50,6 +52,19 @@ export const ELK_BUNDLE = {
   file: "drawio-elk.json",
   // ~900 KB, downloaded once per release - more headroom than the tiny
   // routing core needs.
+  timeoutMs: 20000,
+};
+
+export const SHAPE_INDEX = {
+  // Overridable with DRAWIO_SHAPE_INDEX_URL, same rules as DRAWIO_ELK_URL: an
+  // http(s) URL is fetched (and cached), any other value is a local file path.
+  url: process.env.DRAWIO_SHAPE_INDEX_URL ||
+    "https://cdn.jsdelivr.net/gh/jgraph/drawio-mcp@main/shape-search/search-index.json",
+  file: "shape-index.json",
+  // ~4.8 MB of JSON, ~400 KB brotli on the wire, refreshed with every draw.io
+  // release. Five times the ELK bundle: on a 100 KB/s link the transfer
+  // alone takes ~4 s, so the routing core's 5 s default would fail exactly
+  // the users on slow links, and keep failing on every retry.
   timeoutMs: 20000,
 };
 
@@ -133,7 +148,7 @@ function dropCache(source)
  * returned, and a cached copy that fails validation is discarded and
  * refetched in full.
  *
- * @param {{url: string, file: string}} source - ROUTING_CORE or ELK_BUNDLE
+ * @param {{url: string, file: string, timeoutMs?: number}} source - ROUTING_CORE, ELK_BUNDLE or SHAPE_INDEX
  * @param {function(string)} validate
  * @returns {Promise<string>}
  */

@@ -91,7 +91,7 @@ Opens the draw.io editor with a Mermaid.js diagram definition.
 
 ### `search_shapes`
 
-Searches the draw.io shape library by keywords (same tool as the app server's `search_shapes`, sharing `shared/shape-search.js` and `shared/icon-search.js`). The ~4.6 MB index is not bundled in the npm package — it is fetched from the CDN on first use (overridable via `DRAWIO_SHAPE_INDEX_URL`), or read locally in an in-repo checkout. Results are supplemented live from the draw.io icon service when the local index has no strong match (overridable via `DRAWIO_ICON_SERVICE_URL`, set to `off` to disable).
+Searches the draw.io shape library by keywords (same tool as the app server's `search_shapes`, sharing `shared/shape-search.js` and `shared/icon-search.js`). The ~4.6 MB index is not bundled in the npm package — it is fetched from the CDN on first use through the same ETag-revalidated per-user disk cache as the ELK bundle (`src/cdn-cache.js`: 20 s timeout, 304 on a warm start, the last cached copy when offline; `DRAWIO_SHAPE_INDEX_URL` overrides with another URL or a local path), or read locally in an in-repo checkout. Results are supplemented live from the draw.io icon service when the local index has no strong match (overridable via `DRAWIO_ICON_SERVICE_URL`, set to `off` to disable).
 
 **Parameters:**
 - `query` (required): Space-separated search keywords (e.g. `aws lambda`, `cisco router`, `kubernetes pod`)

@@ -7,6 +7,8 @@ import pako from "pako";
 import { routeXml } from "./libavoid-pass.js";
 import { layoutXml } from "./elk-pass.js";
 import { assertPagePath, listPageMeta, readPageXml, writePageXml } from "./pages.js";
+import { SHAPE_INDEX } from "./cdn-cache.js";
+import { loadShapeIndex } from "./shape-index.js";
 import { spawn } from "child_process";
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
@@ -77,14 +79,14 @@ const mermaidReference = readFileSync(
 );
 
 // Shape search. To keep the npm package lean, the ~4.6 MB shape index is NOT
-// bundled — it is fetched from the CDN on first use and cached in memory for the
-// process lifetime. In-repo checkouts read the local file instead, so dev and
-// tests never touch the network. Override the source with DRAWIO_SHAPE_INDEX_URL.
+// bundled — it is fetched from the CDN on first use through the same
+// ETag-revalidated per-user disk cache as the ELK bundle (cdn-cache.js
+// SHAPE_INDEX: a warm start is a 304, offline falls back to the cached copy)
+// and then kept in memory for the process lifetime. In-repo checkouts read
+// the local file instead, so dev and tests never touch the network. Override
+// the source with DRAWIO_SHAPE_INDEX_URL (an http(s) URL, or a local path).
 // The search algorithm (buildTagMap/searchShapes) is the shared
 // shared/shape-search.js, copied into src/ by copy-shared and bundled.
-const SHAPE_INDEX_URL =
-  process.env.DRAWIO_SHAPE_INDEX_URL ||
-  "https://cdn.jsdelivr.net/gh/jgraph/drawio-mcp@main/shape-search/search-index.json";
 
 // Local-file fast path: repo checkout first, then an optional src/ copy (present
 // only if a consumer chose to bundle it). Absent in a default npm install.
@@ -97,8 +99,9 @@ const localShapeIndexCandidates =
 let shapeSearchPromise = null;
 
 // Resolve once to { searchShapes, shapeIndex, tagMap }, cached for the process.
-// Reads a local index if present, otherwise fetches SHAPE_INDEX_URL. On failure
-// the promise is cleared so a later call can retry (e.g. transient network error).
+// Reads a local index if present, otherwise loads SHAPE_INDEX through the CDN
+// cache. On failure the promise is cleared so a later call can retry (e.g.
+// transient network error).
 function loadShapeSearch()
 {
   if (!shapeSearchPromise)
@@ -109,25 +112,9 @@ function loadShapeSearch()
         .catch(function() { return import("../../shared/shape-search.js"); });
 
       const localPath = localShapeIndexCandidates.find(function(p) { return existsSync(p); });
-      let raw;
-
-      if (localPath)
-      {
-        raw = readFileSync(localPath, "utf-8");
-      }
-      else
-      {
-        const res = await fetch(SHAPE_INDEX_URL);
-
-        if (!res.ok)
-        {
-          throw new Error("HTTP " + res.status + " fetching " + SHAPE_INDEX_URL);
-        }
-
-        raw = await res.text();
-      }
-
-      const shapeIndex = JSON.parse(raw);
+      const shapeIndex = (localPath != null)
+        ? JSON.parse(readFileSync(localPath, "utf-8"))
+        : await loadShapeIndex(SHAPE_INDEX);
       const tagMap = mod.buildTagMap(shapeIndex);
 
       return { searchShapes: mod.searchShapes, shapeIndex, tagMap };
