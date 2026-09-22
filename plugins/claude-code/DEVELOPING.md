@@ -41,10 +41,12 @@ The `url` mode produces the exact same `https://app.diagrams.net/#create=...` UR
 
 - **macOS**: `/Applications/draw.io.app/Contents/MacOS/draw.io`
 - **Linux**: `drawio` (on PATH via snap/apt/flatpak)
-- **Windows**: `"C:\Program Files\draw.io\draw.io.exe"`
+- **Windows**: `"C:\Program Files\draw.io\draw.io.exe"` (default) — the installer neither registers PATH nor forces a drive
 - **WSL2**: `"/mnt/c/Program Files/draw.io/draw.io.exe"` (detect via `grep -qi microsoft /proc/version`)
 
 The skill tries `drawio` first, then falls back to the platform-specific path. On WSL2, use `wslpath -w` to convert paths when opening files with `cmd.exe /c start`.
+
+On Windows and WSL2 the default path is only the start of the chain: draw.io Desktop can be installed to any drive or directory, so `SKILL.md` also has the skill check the per-user install (`%LOCALAPPDATA%\Programs\draw.io`), the registry uninstall keys (`InstallLocation` / `DisplayIcon`), and `Program Files\draw.io` on the other drives before reporting the CLI as absent.
 
 ## Authoring routes
 

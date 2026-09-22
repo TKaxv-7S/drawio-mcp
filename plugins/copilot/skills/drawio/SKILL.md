@@ -222,7 +222,7 @@ The draw.io desktop app includes a command-line interface used for **converting 
 
 ### Locating the CLI
 
-First, detect the environment, then locate the CLI accordingly:
+First, detect the environment, then locate the CLI accordingly. On Windows (native and WSL2) the installer does **not** put draw.io on PATH and the install directory is user-selectable, so work through the whole fallback chain before concluding the CLI is absent.
 
 #### WSL2 (Windows Subsystem for Linux)
 
@@ -250,6 +250,23 @@ If draw.io is installed in a non-default location, check common alternatives:
 "/mnt/c/Users/$WIN_USER/AppData/Local/Programs/draw.io/draw.io.exe"
 ```
 
+If neither exists, the install is on another drive or in a custom directory — scan the other mounted drives, then ask the registry:
+
+```bash
+# Program Files on the other drives (D:, E:, …)
+ls /mnt/*/Program\ Files/draw.io/draw.io.exe 2>/dev/null | head -1
+
+# Registry — the installer records the directory the user picked
+for KEY in 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall' \
+           'HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall' \
+           'HKLM\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'; do
+  WIN_DIR=$(reg.exe query "$KEY" /s /v InstallLocation 2>/dev/null |
+            grep -i 'REG_SZ.*draw\.io' | head -1 |
+            sed 's/.*REG_SZ[[:space:]]*//' | tr -d '\r')
+  [ -n "$WIN_DIR" ] && DRAWIO_CMD="$(wslpath -u "${WIN_DIR%\\}")/draw.io.exe" && break
+done
+```
+
 #### macOS
 
 ```bash
@@ -262,13 +279,45 @@ If draw.io is installed in a non-default location, check common alternatives:
 drawio   # typically on PATH via snap/apt/flatpak
 ```
 
+Use `which drawio` to confirm it is on PATH.
+
 #### Windows (native, non-WSL2)
 
-```
-"C:\Program Files\draw.io\draw.io.exe"
+Check, in order — a missing PATH entry or a non-`C:` install drive is normal, not a sign that draw.io is missing:
+
+1. **PATH**: `where.exe draw.io` (note the dot — the executable is `draw.io.exe`, not `drawio.exe`)
+2. **Default install paths**: `C:\Program Files\draw.io\draw.io.exe`, then the per-user install `%LOCALAPPDATA%\Programs\draw.io\draw.io.exe`
+3. **The registry** uninstall keys, which record the directory the user picked
+4. **The other drives**: `Program Files\draw.io\draw.io.exe` on `D:`, `E:`, …
+
+Save this as `find-drawio.ps1` to run the whole chain at once — it prints the first executable it finds, and nothing at all if draw.io really is not installed:
+
+```powershell
+$c = @()
+$c += (where.exe draw.io 2>$null)
+$c += "$env:ProgramFiles\draw.io\draw.io.exe", "$env:LOCALAPPDATA\Programs\draw.io\draw.io.exe"
+$c += Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                       'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                       'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
+      Where-Object { $_.DisplayName -like '*draw.io*' } |
+      ForEach-Object { if ($_.InstallLocation) { Join-Path $_.InstallLocation 'draw.io.exe' } else { ($_.DisplayIcon -split ',')[0] } }
+$c += (Get-PSDrive -PSProvider FileSystem).Root | ForEach-Object { Join-Path $_ 'Program Files\draw.io\draw.io.exe' }
+$c | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 ```
 
-Use `which drawio` (or `where draw.io` on Windows) to check if it's on PATH before falling back to the platform-specific path.
+From a bash or cmd shell, run it with:
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File find-drawio.ps1
+```
+
+Quote the resulting path on every call — it almost always contains spaces:
+
+```
+& "D:\Program Files\draw.io\draw.io.exe" -x -f xml -o diagram.drawio diagram.mmd
+```
+
+Only once every step comes up empty should you treat the CLI as absent and fall back to XML authoring with `.drawio` / `url` output. When you do find it outside PATH, mention to the user that adding that folder (e.g. `D:\Program Files\draw.io`) to PATH makes it discoverable next time.
 
 ### Convert / layout / export commands
 
