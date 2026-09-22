@@ -12,6 +12,7 @@ import { buildTagMap } from "../../shared/shape-search.js";
 import { searchShapesAndIcons, DEFAULT_ICON_SERVICE_URL } from "../../shared/icon-search.js";
 import { withElkLayout, isFlowchartSource } from "../../shared/mermaid-elk.js";
 import { normalizeDiagram } from "../../shared/normalize-model.js";
+import pkg from "../package.json" with { type: "json" };
 
 /**
  * Build the self-contained HTML string that renders diagrams.
@@ -6632,7 +6633,9 @@ export function createServer(html, options = {})
 {
   const { domain, xmlReference = "", mermaidReference = "", shapeIndex = null,
     iconServiceUrl = DEFAULT_ICON_SERVICE_URL, buildId = "unknown" } = options;
-  const server = new McpServer({ name: "drawio-mcp-app", version: "1.0.0" });
+  // The version clients see in serverInfo is the package version, so it moves
+  // with each release instead of drifting from package.json/server.json.
+  const server = new McpServer({ name: "drawio-mcp-app", version: pkg.version });
 
   const resourceUri = "ui://drawio/mcp-app.html";
 
