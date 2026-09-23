@@ -131,7 +131,7 @@ nothing is sent.
 | Approach | Diagram leaves the machine? |
 |---|---|
 | **MCP App Server — hosted (`mcp.draw.io`)** | **Yes** — it is sent to the draw.io server as the MCP request. Self-host instead (below) to keep it local. |
-| **MCP App Server — self-hosted** (local Node or your own Cloudflare) | No — processed by your server and embedded in HTML that renders client-side. |
+| **MCP App Server — self-hosted** (local Node, the `jgraph/drawio-mcp` Docker image, or your own Cloudflare) | No — processed by your server and embedded in HTML that renders client-side. |
 | **MCP Tool Server** (`@drawio/mcp`) | No — carried in the URL `#fragment`, which browsers do not transmit to the server. |
 | **Assistant Plugins** (Claude Code, Codex CLI, GitHub Copilot) | No — written locally and exported by your local draw.io Desktop CLI. |
 
@@ -147,7 +147,10 @@ fetch application code and assets — not your diagram — but they are still ou
 requests. To reduce or remove them:
 
 - **App Server:** build with the `VIEWER_PATH` environment variable to inline the
-  viewer instead of loading it from `viewer.diagrams.net`.
+  viewer instead of loading it from `viewer.diagrams.net`. Server-side, it makes a
+  version check against `viewer.diagrams.net` at startup and daily (no data, 5 s
+  timeout, safe to block), and `search_shapes` queries `icons.diagrams.net` with the
+  search terms unless `DRAWIO_ICON_SERVICE_URL=off`.
 - **Tool Server:** set the `DRAWIO_BASE_URL` environment variable to a self-hosted
   draw.io instance. Its two server-side passes also fetch **code** from
   `viewer.diagrams.net` once per draw.io release and cache it per user: the libavoid

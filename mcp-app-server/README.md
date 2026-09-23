@@ -96,23 +96,23 @@ Start the HTTP server (for Claude.ai and other web-based hosts):
 npm start
 ```
 
-The server listens on `http://localhost:3001/mcp` by default. Set the `PORT` environment variable to change the port.
+The server listens on `http://localhost:3001/mcp` by default, on the loopback interface only. Set `PORT` to change the port, `LISTEN=0.0.0.0` to accept connections from the network, and `ALLOWED_HOSTS` (comma-separated hostnames) to reject requests whose `Host` header names anything else. The server has no authentication of its own — put it behind an authenticating reverse proxy before exposing it beyond your machine.
 
 ### Running (Docker)
 
 A prebuilt image for `linux/amd64` and `linux/arm64` is published to Docker Hub as [`jgraph/drawio-mcp`](https://hub.docker.com/r/jgraph/drawio-mcp), tagged `latest` and with each server version:
 
 ```bash
-docker run --rm -p 3001:3001 jgraph/drawio-mcp
+docker run --rm -p 127.0.0.1:3001:3001 jgraph/drawio-mcp
 ```
 
-The endpoint is `http://localhost:3001/mcp`, as with `npm start`. Pass `-e PORT=8080 -p 8080:8080` to change the port, and `-e DRAWIO_ICON_SERVICE_URL=off` to keep `search_shapes` from querying the draw.io icon service (see [Data Residency & Offline Use](../README.md#data-residency--offline-use)).
+The endpoint is `http://localhost:3001/mcp`, as with `npm start`. The image listens on all interfaces inside the container (`LISTEN=0.0.0.0`), so the `-p` mapping decides who can reach it: `127.0.0.1:3001:3001` is this machine only, a plain `3001:3001` is everyone on your network. Pass `-e PORT=8080 -p 127.0.0.1:8080:8080` to change the port, `-e ALLOWED_HOSTS=…` to restrict the accepted hostnames, and `-e DRAWIO_ICON_SERVICE_URL=off` to keep `search_shapes` from querying the draw.io icon service. The container is stateless (no volume, no diagram content in its logs) and needs no outbound access to render diagrams — see [Deployment boundary](DOCKER_HUB.md#deployment-boundary) and [Data Residency & Offline Use](../README.md#data-residency--offline-use).
 
 To build the image yourself, use the [`Dockerfile`](Dockerfile) from the **repository root**, not from this directory — at startup the server reads the shared references and the shape index from the sibling `shared/` and `shape-search/` directories:
 
 ```bash
 docker build -f mcp-app-server/Dockerfile -t drawio-mcp-app .
-docker run --rm -p 3001:3001 drawio-mcp-app
+docker run --rm -p 127.0.0.1:3001:3001 drawio-mcp-app
 ```
 
 ### Connecting to Claude.ai

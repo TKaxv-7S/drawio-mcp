@@ -15,6 +15,9 @@
 FROM node:24-alpine
 
 ENV NODE_ENV=production
+# Listen on all interfaces inside the container (the server defaults to
+# loopback); which host interface is exposed is decided by `docker run -p`.
+ENV LISTEN=0.0.0.0
 WORKDIR /app/mcp-app-server
 
 # Dependencies first so they cache independently of source edits. wrangler is

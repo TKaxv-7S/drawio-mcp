@@ -2,7 +2,8 @@
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { hostHeaderValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
+import express from "express";
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
@@ -168,11 +169,26 @@ let html = buildHtml(appWithDepsJs, pakoDeflateJs, mermaidJs,
 async function startStreamableHTTPServer()
 {
   const port = parseInt(process.env.PORT ?? "3001", 10);
+  // Bind address: loopback by default, so a plain `npm start` is not
+  // reachable from the network. The Docker image sets LISTEN=0.0.0.0 (a
+  // container must listen on all its interfaces for -p to work); the host
+  // side of the -p mapping then decides who can reach it.
   const host = process.env.LISTEN ?? "127.0.0.1";
   const allowedHosts = process.env.ALLOWED_HOSTS
     ? process.env.ALLOWED_HOSTS.split(",").map(function(h) { return h.trim(); })
     : undefined;
-  const app = createMcpExpressApp({ host: "0.0.0.0", allowedHosts });
+
+  // Host header validation only when ALLOWED_HOSTS is set. Not implied by a
+  // loopback bind (as createMcpExpressApp would) — tunnels such as
+  // cloudflared and Tailscale Funnel connect to localhost but forward their
+  // public hostname in the Host header.
+  const app = express();
+  app.use(express.json());
+
+  if (allowedHosts)
+  {
+    app.use(hostHeaderValidation(allowedHosts));
+  }
 
   // Re-check the libavoid CDN ETags daily and rebuild the HTML when a
   // draw.io release changed them — each /mcp request creates its McpServer
@@ -250,7 +266,7 @@ async function startStreamableHTTPServer()
     }
   });
 
-  const httpServer = app.listen(port, function()
+  const httpServer = app.listen(port, host, function()
   {
     console.log(`MCP App server listening on http://${host}:${port}/mcp`);
   });
