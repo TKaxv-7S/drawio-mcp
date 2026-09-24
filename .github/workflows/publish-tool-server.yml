@@ -67,7 +67,7 @@ jobs:
           echo "Publishing @drawio/mcp@$version"
 
       # prepack runs copy-shared, so the shared references and helpers land in
-      # src/ before the tarball is built (see mcp-tool-server/CLAUDE.md).
+      # src/ before the tarball is built (see mcp-tool-server/AGENTS.md).
       - name: Publish
         if: ${{ !inputs.dry_run }}
         run: npm publish

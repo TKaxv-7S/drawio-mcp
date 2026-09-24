@@ -63,4 +63,4 @@ Two shared references live at the repo root (single source of truth for all prom
 
 - **Allman brace style**: Opening braces go on their own line for all control structures, functions, objects, and callbacks.
 - Prefer `function()` expressions over arrow functions for callbacks.
-- See the root `CLAUDE.md` for examples.
+- See the root `AGENTS.md` for examples.
