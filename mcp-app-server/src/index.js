@@ -219,6 +219,12 @@ async function startStreamableHTTPServer()
     res.sendFile(faviconPath);
   });
 
+  // Uptime probe for monitors and container health checks
+  app.get("/health", function(req, res)
+  {
+    res.set("Cache-Control", "no-store").type("text/plain").send("ok");
+  });
+
   app.all("/mcp", async function(req, res)
   {
     const method = req.body && req.body.method;

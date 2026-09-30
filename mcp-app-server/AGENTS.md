@@ -55,6 +55,7 @@ The Worker uses **4 sharded Durable Objects** (`MCPSessionManager`) to manage al
 - New sessions (no session ID) go to a random shard; the DO generates a UUID whose first hex char routes back to that shard
 - Each DO maintains a `Map` of session IDs to server/transport instances
 - Sessions are kept alive for **5 minutes** of inactivity, then cleaned up (runs every 60 seconds)
+- `/health` is the uptime probe (Pingdom watches `https://mcp.draw.io/health`): the Worker routes it to a random shard like a session-less `GET /mcp`, and the DO answers `200 ok` before any session logic, so it creates no session. It exists because monitors count that GET's `400 Session not found` as down. The Node server answers `/health` directly
 
 **Why sharded DOs?**
 - Durable Objects charge per request + per GB-seconds of active memory

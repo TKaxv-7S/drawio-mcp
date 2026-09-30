@@ -96,7 +96,7 @@ Start the HTTP server (for Claude.ai and other web-based hosts):
 npm start
 ```
 
-The server listens on `http://localhost:3001/mcp` by default, on the loopback interface only. Set `PORT` to change the port, `LISTEN=0.0.0.0` to accept connections from the network, and `ALLOWED_HOSTS` (comma-separated hostnames) to reject requests whose `Host` header names anything else. The server has no authentication of its own — put it behind an authenticating reverse proxy before exposing it beyond your machine.
+The server listens on `http://localhost:3001/mcp` by default, on the loopback interface only. Set `PORT` to change the port, `LISTEN=0.0.0.0` to accept connections from the network, and `ALLOWED_HOSTS` (comma-separated hostnames) to reject requests whose `Host` header names anything else. The server has no authentication of its own — put it behind an authenticating reverse proxy before exposing it beyond your machine. `GET /health` answers `200 ok`, for uptime monitors and container health checks.
 
 ### Running (Docker)
 

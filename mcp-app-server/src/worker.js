@@ -63,6 +63,13 @@ export class MCPSessionManager
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
+    // Uptime probe, routed here by the Worker: answering proves this shard is
+    // reachable and not overloaded, without creating a session.
+    if (new URL(request.url).pathname === "/health")
+    {
+      return new Response("ok", { headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" } });
+    }
+
     this.log(`[request] ${request.method} session=${(request.headers.get("mcp-session-id") || "none").slice(0, 8)}`);
 
     // Extract or generate session ID.
@@ -433,8 +440,10 @@ export default
       });
     }
 
-    // Only serve /mcp
-    if (url.pathname !== "/mcp")
+    // Only serve /mcp, and /health for uptime monitors (Pingdom counts the 400
+    // of a session-less GET /mcp as down). /health takes the same route to a
+    // shard as that GET, so it checks the Durable Objects too, not just the Worker.
+    if (url.pathname !== "/mcp" && url.pathname !== "/health")
     {
       return new Response("Not Found", { status: 404 });
     }
