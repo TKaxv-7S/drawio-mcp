@@ -27,6 +27,11 @@
  *  - Point/Rectangle/ConnEnd/Checkpoint(+vector) are embind wrappers COPIED
  *    into the objects they parameterize and NOT freed by router.delete();
  *    free each temporary with .delete()
+ *  - displayRoute() and PolyLine.at() return a fresh OWNED copy per call in
+ *    this build, but an unowned reference in draw.io's own binding
+ *    (drawio-libavoid) — read routes through readRoute, which frees exactly
+ *    the copies. A leaked copy changes later routes: libavoid breaks ties
+ *    by object address, and leaks move where the next solve allocates
  *  - a directed ShapeConnectionPin gives the route NO minimum straight
  *    lead-out (it may turn at the anchor and run flush along the shape); a
  *    minimum stub needs a routing checkpoint at the stub tip. Checkpoint
@@ -537,6 +542,67 @@
 			}
 		}
 
+		// A connector's display route as plain {x, y} points, freeing exactly
+		// what the binding hands over: displayRoute() and PolyLine.at() are
+		// UNOWNED references in draw.io's own binding (drawio-libavoid: the
+		// editor, the mcp app server) — deleting one destroys the route in
+		// place — and a fresh OWNED copy per call in the upstream libavoid-js
+		// build (the mcp tool server). Two calls alias one object only for
+		// references (isAliasOf), probed once per solve. A leaked copy is not
+		// just memory: libavoid breaks ties between equal coordinates by
+		// object address, so it moved the next solve's allocations and a
+		// long-lived module routed identical input differently.
+		var ownedRoutes = null;
+		var ownedPoints = null;
+
+		function owned(first, second)
+		{
+			if (first.isAliasOf(second))
+			{
+				return false;
+			}
+
+			second.delete();
+
+			return true;
+		}
+
+		function readRoute(conn)
+		{
+			var route = conn.displayRoute();
+			var n = route.size();
+			var pts = [];
+
+			if (ownedRoutes == null)
+			{
+				ownedRoutes = owned(route, conn.displayRoute());
+			}
+
+			for (var k = 0; k < n; k++)
+			{
+				var p = route.at(k);
+
+				if (ownedPoints == null)
+				{
+					ownedPoints = owned(p, route.at(k));
+				}
+
+				pts.push({x: p.x, y: p.y});
+
+				if (ownedPoints)
+				{
+					p.delete();
+				}
+			}
+
+			if (ownedRoutes)
+			{
+				route.delete();
+			}
+
+			return pts;
+		}
+
 		var conns = [];
 
 		for (i = 0; i < edges.length; i++)
@@ -649,7 +715,7 @@
 		// checkpointed solve only where it does not.
 		function endSegment(route, atStart)
 		{
-			var n = route.size();
+			var n = route.length;
 
 			if (n < 2)
 			{
@@ -657,8 +723,8 @@
 				return Infinity;
 			}
 
-			var a = route.at(atStart ? 0 : n - 1);
-			var b = route.at(atStart ? 1 : n - 2);
+			var a = route[atStart ? 0 : n - 1];
+			var b = route[atStart ? 1 : n - 2];
 			var horizontal = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
 			var len = 0;
 
@@ -667,7 +733,7 @@
 			// terminal's row/column.
 			for (var k = atStart ? 1 : n - 2; k >= 0 && k < n; k += atStart ? 1 : -1)
 			{
-				var p = route.at(k);
+				var p = route[k];
 
 				if (Math.abs(horizontal ? p.y - a.y : p.x - a.x) > 0.5)
 				{
@@ -693,7 +759,7 @@
 
 			// 0.5px tolerance: sub-pixel misses vanish in the output rounding
 			// and do not warrant pinning the route to the checkpoints.
-			var r0 = c.conn.displayRoute();
+			var r0 = readRoute(c.conn);
 
 			if ((c.scp != null && endSegment(r0, true) < c.sourceJetty - 0.5) ||
 				(c.tcp != null && endSegment(r0, false) < c.targetJetty - 0.5))
@@ -716,30 +782,17 @@
 
 		for (i = 0; i < conns.length; i++)
 		{
-			var route = conns[i].conn.displayRoute();
-			var n = route.size();
+			var pts = readRoute(conns[i].conn);
 			var wps = [];
 
-			if (n >= 2)
+			for (var k = 1; k < pts.length - 1; k++)
 			{
-				var pts = [];
-				var k;
-
-				for (k = 0; k < n; k++)
+				if (collinear(pts[k - 1], pts[k], pts[k + 1]))
 				{
-					var p = route.at(k);
-					pts.push({x: p.x, y: p.y});
+					continue;
 				}
 
-				for (k = 1; k < n - 1; k++)
-				{
-					if (collinear(pts[k - 1], pts[k], pts[k + 1]))
-					{
-						continue;
-					}
-
-					wps.push({x: Math.round(pts[k].x), y: Math.round(pts[k].y)});
-				}
+				wps.push({x: Math.round(pts[k].x), y: Math.round(pts[k].y)});
 			}
 
 			out[conns[i].id] = wps;

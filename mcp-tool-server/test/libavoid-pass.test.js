@@ -199,3 +199,54 @@ test("children of a wrapped container are placed in its frame", async function (
   assert.deepEqual(points(await routeXml(nested), "edge"),
     points(await routeXml(scene(100)), "edge"));
 });
+
+// ─── Determinism ─────────────────────────────────────────────────
+
+// A pinned wire between two vertices: exit/entry as [x, y] fractions.
+function wire(id, source, target, exit, entry)
+{
+  return '<mxCell id="' + id + '" edge="1" parent="1" source="' + source +
+    '" target="' + target + '" style="exitX=' + exit[0] + ";exitY=" +
+    exit[1] + ";entryX=" + entry[0] + ";entryY=" + entry[1] + ';">' +
+    '<mxGeometry relative="1" as="geometry"/></mxCell>';
+}
+
+// Page 1 of drawio-dev's templates/engineering/electrical_2.xml as the
+// router sees it: the components' bounds and the pinned wires, in the
+// template's cell order. Its many shared sides give libavoid lots of
+// coordinate ties to break.
+function circuit()
+{
+  const L = [0, 0.5], R = [1, 0.5];
+
+  return '<mxGraphModel adaptiveColors="auto">' + root(
+    vertex("s1", 180, 290, 100, 60) + vertex("n2", 350, 200, 100, 20) +
+    vertex("n3", 590, 200, 100, 20) + vertex("n4", 350, 370, 100, 20) +
+    vertex("n5", 590, 370, 100, 20) + vertex("n6", 470, 290, 100, 20) +
+    vertex("r1", 362, 200, 40, 20) + vertex("r2", 362, 370, 40, 20) +
+    vertex("r5", 500, 260, 40, 20) + vertex("r3", 650, 200, 40, 20) +
+    vertex("r4", 650, 370, 40, 20) + vertex("is1", 280, 270, 80, 80) +
+    vertex("is2", 480, 150, 80, 80) + vertex("is3", 480, 350, 80, 80) +
+    wire("w1", "s1", "n2", R, R) + wire("w2", "s1", "n3", R, R) +
+    wire("w3", "n2", "n6", L, L) + wire("w4", "n2", "n4", L, R) +
+    wire("w5", "n3", "n5", L, R) + wire("w6", "n4", "s1", L, L) +
+    wire("w7", "n5", "s1", L, L)) + "</mxGraphModel>";
+}
+
+test("a page routes the same whatever the process routed before",
+  async function ()
+{
+  // libavoid breaks coordinate ties by object ADDRESS, so a solve's routes
+  // depend on the heap it starts from; the routing core must leave the
+  // wasm heap exactly as it found it. It used to leak the route copies
+  // this build's displayRoute()/at() return, which moved every later
+  // solve's allocations: this page came back different from call to call.
+  const first = await routeXml(circuit());
+
+  for (let i = 1; i <= 4; i++)
+  {
+    await routeXml(scene(100));
+    assert.equal(await routeXml(circuit()), first,
+      "routing call " + i + " came out different");
+  }
+});
