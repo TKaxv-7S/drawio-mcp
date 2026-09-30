@@ -617,6 +617,44 @@
 	};
 
 	/**
+	 * Length of a route's first (atStart) or last straight run, px: the
+	 * lead-out a jetty minimum is checked against. route: the route's points
+	 * ({x, y}, endpoints included). Collinear raw points are merged (libavoid
+	 * may split a straight lead-out) — the run ends at the first point that
+	 * leaves the terminal's row/column. Infinity for a degenerate route, which
+	 * checkpoints cannot improve. Shared by computeRoutes' lazy jetty check and
+	 * the editor's drag preview, so both enforce the same minimum.
+	 */
+	AvoidRouting.endSegment = function(route, atStart)
+	{
+		var n = route.length;
+
+		if (n < 2)
+		{
+			return Infinity;
+		}
+
+		var a = route[atStart ? 0 : n - 1];
+		var b = route[atStart ? 1 : n - 2];
+		var horizontal = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
+		var len = 0;
+
+		for (var k = atStart ? 1 : n - 2; k >= 0 && k < n; k += atStart ? 1 : -1)
+		{
+			var p = route[k];
+
+			if (Math.abs(horizontal ? p.y - a.y : p.x - a.x) > 0.5)
+			{
+				break;
+			}
+
+			len = Math.abs(horizontal ? p.x - a.x : p.y - a.y);
+		}
+
+		return len;
+	};
+
+	/**
 	 * True when a route is libavoid's NO-ROUTE fallback instead of a route.
 	 * When the search finds no path, libavoid returns the straight segment
 	 * between the connector's two end vertices; for a pinned end that vertex
@@ -795,40 +833,6 @@
 			}
 
 			return pts;
-		}
-
-		// Length of a route's first/last straight run (jetty check below).
-		function endSegment(route, atStart)
-		{
-			var n = route.length;
-
-			if (n < 2)
-			{
-				// Degenerate route; checkpoints cannot improve it.
-				return Infinity;
-			}
-
-			var a = route[atStart ? 0 : n - 1];
-			var b = route[atStart ? 1 : n - 2];
-			var horizontal = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
-			var len = 0;
-
-			// Merge collinear raw points (libavoid may split a straight
-			// lead-out): the run ends at the first point that leaves the
-			// terminal's row/column.
-			for (var k = atStart ? 1 : n - 2; k >= 0 && k < n; k += atStart ? 1 : -1)
-			{
-				var p = route[k];
-
-				if (Math.abs(horizontal ? p.y - a.y : p.x - a.x) > 0.5)
-				{
-					break;
-				}
-
-				len = Math.abs(horizontal ? p.x - a.x : p.y - a.y);
-			}
-
-			return len;
 		}
 
 		// Proportional pins on bounds b as absolute {x, y} (null stays null).
@@ -1126,8 +1130,8 @@
 				var r0 = readRoute(c.conn);
 
 				if (!AvoidRouting.isFallbackRoute(r0, c.sourcePins, c.targetPins) &&
-					((c.scp != null && endSegment(r0, true) < c.sourceJetty - 0.5) ||
-					(c.tcp != null && endSegment(r0, false) < c.targetJetty - 0.5)))
+					((c.scp != null && AvoidRouting.endSegment(r0, true) < c.sourceJetty - 0.5) ||
+					(c.tcp != null && AvoidRouting.endSegment(r0, false) < c.targetJetty - 0.5)))
 				{
 					// In route order (source first); setRoutingCheckpoints copies
 					// the vector, so free the wrapper.
