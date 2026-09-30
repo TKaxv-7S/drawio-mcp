@@ -44,24 +44,21 @@ For local dev, set `VIEWER_PATH` / `ELK_PATH` / `MERMAID_PATH` to a built bundle
 |---|---|---|
 | **Transport** | `StreamableHTTPServerTransport` (Express) | `WebStandardStreamableHTTPServerTransport` |
 | **HTML build** | Reads bundles from `node_modules` + `vendor/` at startup | Pre-built via `build-html.js` → `generated-html.js` |
-| **Session management** | In-memory Map (process-scoped) | Single Durable Object (cost-optimized) |
+| **Session management** | In-memory Map (process-scoped) | None — a server per request; the session's one bit of state rides in its id |
 
 ### Cloudflare Workers Architecture
 
-The Worker uses **4 sharded Durable Objects** (`MCPSessionManager`) to manage all MCP sessions:
+The Worker serves `/mcp` **statelessly**: every request gets its own `createServer()` + `WebStandardStreamableHTTPServerTransport`, built in the Worker and dropped with the response. Nothing is held between requests, so it scales out with the Workers runtime and there is no Durable Object on the request path.
 
-- Sessions are spread across 4 shards (`shard-0` through `shard-3`) using `idFromName("shard-N")`
-- Routing: `parseInt(sessionId.charAt(0), 16) % 4` determines the shard
-- New sessions (no session ID) go to a random shard; the DO generates a UUID whose first hex char routes back to that shard
-- Each DO maintains a `Map` of session IDs to server/transport instances
-- Sessions are kept alive for **5 minutes** of inactivity, then cleaned up (runs every 60 seconds)
-- `/health` is the uptime probe (Pingdom watches `https://mcp.draw.io/health`): the Worker routes it to a random shard like a session-less `GET /mcp`, and the DO answers `200 ok` before any session logic, so it creates no session. It exists because monitors count that GET's `400 Session not found` as down. The Node server answers `/health` directly
+- **Sessions (2025-era protocol):** an `initialize` is answered with a minted `Mcp-Session-Id`, `ui-<uuid>` or `noui-<uuid>` — whether the client declared the `io.modelcontextprotocol/ui` capability, the one piece of per-session state the server needs (see [Clients without an MCP Apps UI](#clients-without-an-mcp-apps-ui)). A later request's server reads it back from the header (`uiSession` option of `createServer`), and its transport is marked initialized (`_initialized`) since it never saw the handshake. Any session id is accepted — there is no "session not found" anymore; an id without either prefix (issued before this scheme) reads as "not declared".
+- **Session-less requests** other than `initialize` get the transport's own `400 Server not initialized` — the answer MCP 2026-07-28 clients (claude-code, copilot-cli, some Claude.ai traffic) get for their `server/discover` probe before falling back to `initialize`.
+- **`GET /mcp` → 405** (no standalone SSE stream: the server never sends anything outside a response), **`DELETE` → 200** (nothing to release).
+- **`MCPSessionManager`** is now one Durable Object per session id (`idFromName(sessionId)`, RPC methods `markUiResourceRead` / `uiResourceRead`), holding only the "fetched the app resource" flag in storage, dropped by an alarm 24 h after the last fetch. Only clients that did *not* declare the UI capability ever reach it — on `resources/read` of the app and on `create_diagram` — so it sees a tiny fraction of the traffic. A failed lookup counts as "not read", which only appends the fallback link. The class name is kept from the old design to avoid a wrangler migration.
+- **`/health`** is the uptime probe (Pingdom watches `https://mcp.draw.io/health`): it runs an `initialize` through the same per-request path as `/mcp` and answers `200 ok` (`503` otherwise). It exists because monitors count the non-2xx of a session-less `GET /mcp` as down. The Node server answers `/health` directly.
 
-**Why sharded DOs?**
-- Durable Objects charge per request + per GB-seconds of active memory
-- Sharding across 4 DOs spreads memory pressure vs a single DO holding all sessions
-- More cost-effective than one DO per session
-- Session cleanup prevents unbounded memory growth
+**Why stateless?** Until 2026-09-30 every session's server + transport lived in the memory of sharded Durable Objects (4, then 16, routed by the session id's first hex char). A DO handles its requests one at a time and has 128 MB: with each session building its own shape-search tag map (~8 MB), the shards hit their memory limit ~1,200 times an hour and reset (dropping every session), and on 2026-09-30 they overloaded outright ("Durable Object is overloaded"). Claude.ai opens a new session per connector refresh (`initialize` → `tools/list` → `resources/list`, rarely a call, never a `DELETE`), so the DOs mostly held idle sessions — ~0.3 MB each once they had served `tools/list`. The DOs were also the dominant cost (billed per active object, 128 MB each). The only state a session needs is one bit, which fits in its id.
+
+**MCP 2026-07-28** drops sessions and `initialize` altogether (capabilities arrive per request in `_meta`). Supporting it natively means SDK v2 (`@modelcontextprotocol/server` + `ext-apps` 2.x); v2's default handling of 2025-era clients is stateless too but loses their `initialize` capabilities, so the capability-in-session-id scheme stays for them.
 
 **DOMAIN secret:**
 - Set via `wrangler secret put DOMAIN`
@@ -72,11 +69,12 @@ The Worker uses **4 sharded Durable Objects** (`MCPSessionManager`) to manage al
 **wrangler.toml migrations:**
 - The v3 migration tag is already applied in production
 - Do NOT add a new `[[migrations]]` tag unless the DO class name changes — it will cause deploy conflicts
-- The 4-shard routing is done in code via `idFromName("shard-N")`, not via wrangler config
 
 ## Clients without an MCP Apps UI
 
-`create_diagram` appends a second text block carrying an `app.diagrams.net/?pv=0&grid=0#create=` URL when the connected client doesn't render the app — a plain MCP client (Codex CLI, a terminal agent, a script) otherwise receives the JSON payload and nothing renders the diagram anywhere. Detection is `clientDeclaresUi()` (the `io.modelcontextprotocol/ui` capability from `getUiCapability`, carrying `RESOURCE_MIME_TYPE`) OR `uiResourceRead`, a per-session flag set when the client actually fetches the `ui://` resource — which covers a host that renders through its own negotiation without declaring the capability.
+`create_diagram` appends a second text block carrying an `app.diagrams.net/?pv=0&grid=0#create=` URL when the connected client doesn't render the app — a plain MCP client (Codex CLI, a terminal agent, a script) otherwise receives the JSON payload and nothing renders the diagram anywhere. Detection is `capabilitiesDeclareUi()` (the `io.modelcontextprotocol/ui` capability from `getUiCapability`, carrying `RESOURCE_MIME_TYPE`) OR `uiResourceRead`, a per-session flag set when the client actually fetches the `ui://` resource — which covers a host that renders through its own negotiation without declaring the capability.
+
+Where the two signals live depends on how long the server instance lives. The Node server keeps one per session, so both sit on the instance. The Worker builds one per request and passes `createServer` a `uiSession`: `declared` comes from the session id minted at `initialize` (`ui-` / `noui-`), and the resource flag from that session's `MCPSessionManager` Durable Object — see [Cloudflare Workers Architecture](#cloudflare-workers-architecture).
 
 The block is only ever *appended*: the app reads the FIRST text block (`content.find`), so a host that renders but wasn't detected keeps working, and the wording stays conditional ("if this client doesn't show the diagram inline") so it can't assert something false there. XML goes into the URL as-is, so a requested `postLayout` adds a note saying the link opens the authored coordinates (that pass lives in the app). Mermaid goes in as `type: "mermaid"` and the editor converts + lays it out on open — and a requested `postLayout: "elk"` *does* survive, because it is selected in the source: `withElkLayout` from `shared/mermaid-elk.js` (the canonical copy; the browser-side `withElkRenderer` in the app HTML is the same transform, kept in sync by hand since the self-contained HTML can't import).
 
@@ -109,7 +107,7 @@ Returns `null` for unsupported diagram types — the wrapper converts that to a 
 
 ## Shape Search Index
 
-The `search_shapes` tool uses a pre-built index from `shape-search/search-index.json` (~10,000 shapes). The index is embedded in `generated-html.js` at build time (adds ~4 MB to the Worker bundle). The local search runs in-process; the tag lookup map is built once per session when `createServer()` is called. If the index file is missing, `search_shapes` is silently not registered.
+The `search_shapes` tool uses a pre-built index from `shape-search/search-index.json` (~10,000 shapes). The index is embedded in `generated-html.js` at build time (adds ~4 MB to the Worker bundle). The local search runs in-process; the tag lookup map (~100 ms to build, several MB) is built once per process or Worker isolate, on the first search, and shared by every server (`getTagMap`). If the index file is missing, `search_shapes` is silently not registered.
 
 When the local index has no strong match for a query (no result exact-matched every term), results are supplemented live from the draw.io icon service (`icons.diagrams.net` — brand logos and general-purpose concept icons, returned as `shape=image` styles). The merge pipeline is `searchShapesAndIcons` in `shared/icon-search.js`: strong local results lead and icons only fill spare slots; weak (Soundex/OR-fallback) local results keep at most half the budget. A full page of strong local results makes no network request; a service failure degrades to local-only results. The endpoint is configurable via `createServer`'s `iconServiceUrl` option, wired to `DRAWIO_ICON_SERVICE_URL` in both entries (set to `off` to disable). `https://icons.diagrams.net` is whitelisted in the iframe CSP `resourceDomains` so the referenced icon images render in the inline viewer.
 
@@ -127,7 +125,7 @@ Claude.ai sends `Accept: application/json, text/event-stream` (both). The server
 const wantsSSE = acceptsSSE && !acceptsJson; // JSON wins when both present
 ```
 
-- **JSON mode** (Claude.ai): sets `transport._enableJsonResponse = true` before handling, resets after
+- **JSON mode** (Claude.ai): the Worker's per-request transport is created with `enableJsonResponse: true`
 - **SSE mode** (Claude Desktop): standard SSE streaming via `handleRequest()`
 - This was a critical fix — the original code matched on `text/event-stream` alone, routing Claude.ai to SSE mode which it can't consume
 
@@ -137,14 +135,13 @@ Debug logging is **off by default**. Enable via `wrangler secret put DEBUG` (set
 
 | Tag | Content |
 |-----|---------|
-| `[request]` | HTTP method, session ID (first 8 chars) |
-| `[rpc]` | JSON-RPC method name, session ID, `NEW` flag for fresh sessions |
-| `[session-create]` | DOMAIN value, session ID |
-| `[transport-error]` | SDK-internal errors (e.g. "Server not initialized", "Only one SSE stream") |
+| `[rpc]` | HTTP method, JSON-RPC method name, session ID (prefix + first chars), `NEW` for an `initialize` |
+| `[transport-error]` | SDK-internal errors (e.g. "Server not initialized") |
 | `[response]` | Method, session, mode (SSE/JSON), HTTP status, elapsed ms |
 | `[response-body]` | Full response for `resources/list`, `resources/read`, `tools/list`, `tools/call` |
-| `[cleanup]` | Session count, oldest age, max idle, idle>1m count (once/minute) |
-| `[sessions] REJECTED` | GET requests for non-existent session IDs |
+| `[ui-flag]` | A failed read/write of a session's "fetched the app resource" Durable Object |
+
+Unexpected exceptions are always logged (`[error]`, with the stack) and answered with a JSON-RPC `500`.
 
 **Note:** At high traffic, `wrangler tail` enters sampling mode and drops messages. Use `wrangler tail --format json | grep` to filter for specific methods.
 
@@ -153,8 +150,6 @@ Debug logging is **off by default**. Enable via `wrangler secret put DEBUG` (set
 - **Server works end-to-end via curl** — all 6 MCP protocol steps succeed (initialize → notifications/initialized → tools/list → resources/list → resources/read → tools/call)
 - **Claude.ai never sends `resources/read` or `tools/call`** — completes the handshake (through `resources/subscribe`) but stops. This is a Claude.ai-side issue, not a server bug
 - **MCP Apps for custom connectors** may not be fully supported on Claude.ai yet. Contact `mcp-apps@anthropic.com` for status
-- **"Session not found" (404)** — returned when clients resume stale session IDs after cleanup (5-minute idle timeout) or after deploys. Clients should re-initialize with a fresh session
-- **SSE stream conflicts** (`409 Conflict: Only one SSE stream`) are benign — clients reconnecting SSE on sessions that already have an active stream
 
 ## Scripts
 

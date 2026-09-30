@@ -6519,11 +6519,12 @@ function validateDiagramXml(xml)
 // ── Shape search ── imported from ../../shared/shape-search.js (buildTagMap, searchShapes)
 
 // The tag map over the ~10,000-shape index, built once per index rather than
-// once per session: every new MCP session gets its own server, and building
-// the map costs tens of milliseconds of CPU plus a full copy in memory. On
-// Workers that ran on every initialize inside the session Durable Objects,
-// which overloaded them at ~20 new sessions per second (2026-09-30). The map
-// is read-only after the build, so all sessions can share it.
+// once per server, and only when the first search needs it: building it costs
+// ~100 ms of CPU and several MB. The Node server builds a server per session
+// and the Worker one per request, and building the map for each of them
+// overloaded the Worker's session Durable Objects at ~20 new sessions per
+// second (2026-09-30). The map is read-only after the build, so every server
+// shares it.
 var tagMapCache = new WeakMap();
 
 function getTagMap(shapeIndex)
@@ -6567,21 +6568,24 @@ function drawioCreateUrl(data, type)
 }
 
 /**
- * Whether the connected client declared that it renders MCP Apps UI
+ * Whether client capabilities declare that the client renders MCP Apps UI
  * resources — the `io.modelcontextprotocol/ui` capability carrying the app
  * mime type. A plain MCP client (Codex CLI, a terminal agent, a script)
  * declares nothing, gets the tool's JSON payload, and never renders the
  * diagram at all; that's who the fallback URL is for.
  *
- * The declaration is the primary signal; createServer also flips a flag when
- * the client actually fetches the app resource, which covers a host that
- * renders through its own negotiation without declaring this capability.
+ * The declaration is the primary signal; createServer also records when the
+ * client actually fetches the app resource, which covers a host that renders
+ * through its own negotiation without declaring this capability.
+ *
+ * @param {object|null|undefined} capabilities - as sent in `initialize`
+ * @returns {boolean}
  */
-function clientDeclaresUi(server)
+export function capabilitiesDeclareUi(capabilities)
 {
   try
   {
-    const ui = getUiCapability(server.server.getClientCapabilities());
+    const ui = getUiCapability(capabilities);
 
     return ui != null && Array.isArray(ui.mimeTypes) &&
       ui.mimeTypes.includes(RESOURCE_MIME_TYPE);
@@ -6590,6 +6594,12 @@ function clientDeclaresUi(server)
   {
     return false;
   }
+}
+
+/** capabilitiesDeclareUi for the client this server was initialized by. */
+function clientDeclaresUi(server)
+{
+  return capabilitiesDeclareUi(server.server.getClientCapabilities());
 }
 
 /**
@@ -6648,12 +6658,13 @@ function appendOpenUrl(content, rendersInline, data, type, postLayout)
  * @param {Array} [options.shapeIndex] - Shape search index array from search-index.json.
  * @param {string|null} [options.iconServiceUrl] - Base URL of the draw.io icon service used to supplement sparse search_shapes results (default: icons.diagrams.net). Pass null to disable icon supplementation.
  * @param {string} [options.buildId] - Build identifier (git SHA + timestamp). Echoed back in every tool response as `_buildId` so you can confirm which deploy you're hitting.
+ * @param {object} [options.uiSession] - The two "does this client render the app" signals, for a server that lives for one request rather than a whole session (the Cloudflare Worker builds one per request, so it never sees the client's initialize): `declared` is whether the client declared the UI capability at initialize, and the async `markResourceRead()` / `resourceRead()` record and look up that it fetched the app resource. Omitted, both signals come from this server instance, which then has to live as long as the session (the Node server).
  * @returns {McpServer}
  */
 export function createServer(html, options = {})
 {
   const { domain, xmlReference = "", mermaidReference = "", shapeIndex = null,
-    iconServiceUrl = DEFAULT_ICON_SERVICE_URL, buildId = "unknown" } = options;
+    iconServiceUrl = DEFAULT_ICON_SERVICE_URL, buildId = "unknown", uiSession = null } = options;
   // The version clients see in serverInfo is the package version, so it moves
   // with each release instead of drifting from package.json/server.json.
   const server = new McpServer({ name: "drawio-mcp-app", version: pkg.version });
@@ -6663,6 +6674,20 @@ export function createServer(html, options = {})
   // Set once this session's client fetches the app resource — see
   // clientDeclaresUi / appendOpenUrl.
   let uiResourceRead = false;
+
+  /**
+   * Whether this session's client renders the app (see appendOpenUrl): it
+   * declared the UI capability, or it has fetched the app resource.
+   */
+  async function rendersInline()
+  {
+    if (uiSession == null)
+    {
+      return clientDeclaresUi(server) || uiResourceRead;
+    }
+
+    return uiSession.declared || uiResourceRead || await uiSession.resourceRead();
+  }
 
   registerAppTool(
     server,
@@ -6789,8 +6814,8 @@ export function createServer(html, options = {})
 
         var mermaidContent = [{ type: "text", text: JSON.stringify(mermaidPayload) }];
 
-        appendOpenUrl(mermaidContent, clientDeclaresUi(server) || uiResourceRead,
-          mermaid, "mermaid", postLayout);
+        appendOpenUrl(mermaidContent, await rendersInline(), mermaid, "mermaid",
+          postLayout);
 
         return { content: mermaidContent };
       }
@@ -6852,8 +6877,8 @@ export function createServer(html, options = {})
       }
 
       // The absolutized XML, so image URLs resolve in the editor too.
-      appendOpenUrl(content, clientDeclaresUi(server) || uiResourceRead,
-        xmlPayload.xml, "xml", postLayout);
+      appendOpenUrl(content, await rendersInline(), xmlPayload.xml, "xml",
+        postLayout);
 
       return { content: content };
     }
@@ -6863,8 +6888,6 @@ export function createServer(html, options = {})
 
   if (shapeIndex && shapeIndex.length > 0)
   {
-    var tagMap = getTagMap(shapeIndex);
-
     registerAppTool(
       server,
       "search_shapes",
@@ -6936,8 +6959,8 @@ export function createServer(html, options = {})
       async function({ query, limit })
       {
         var maxLimit = Math.min(limit || 10, 50);
-        var results = await searchShapesAndIcons(shapeIndex, tagMap, query,
-          maxLimit, { serviceUrl: iconServiceUrl });
+        var results = await searchShapesAndIcons(shapeIndex, getTagMap(shapeIndex),
+          query, maxLimit, { serviceUrl: iconServiceUrl });
 
         if (results.length === 0)
         {
@@ -6965,6 +6988,14 @@ export function createServer(html, options = {})
       // Only a client that renders the app fetches its HTML — a second
       // signal next to the declared capability (see clientDeclaresUi).
       uiResourceRead = true;
+
+      // A per-request server forgets that with the response, so it's kept
+      // for the session — only needed when the declaration doesn't already
+      // say the client renders.
+      if (uiSession != null && !uiSession.declared)
+      {
+        await uiSession.markResourceRead();
+      }
 
       return {
         contents:
