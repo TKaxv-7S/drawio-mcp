@@ -78,18 +78,29 @@
 	 * proportional position clamped to [0,1] (some shapes' connection points
 	 * sit slightly outside, e.g. a hexagon tip at y=-0.017, which
 	 * ShapeConnectionPin rejects) plus the ConnDirFlags direction derived from
-	 * the ORIGINAL values so it still points off the correct edge. Returns
-	 * null when either coordinate is missing/not a number (floating endpoint).
+	 * the ORIGINAL values so it still points off the correct edge. perimeter
+	 * is the edge's exitPerimeter/entryPerimeter (false only when set to 0;
+	 * see shapePin). Returns null when either coordinate is missing/not a
+	 * number (floating endpoint).
 	 */
-	AvoidRouting.constraintForPoint = function(x, y)
+	AvoidRouting.constraintForPoint = function(x, y, perimeter)
 	{
 		if (x == null || y == null || isNaN(x) || isNaN(y))
 		{
 			return null;
 		}
 
-		return {x: AvoidRouting.clamp01(x), y: AvoidRouting.clamp01(y),
+		var c = {x: AvoidRouting.clamp01(x), y: AvoidRouting.clamp01(y),
 			dir: AvoidRouting.dirForPoint(x, y)};
+
+		// Only false matters (exitPerimeter=0): flips then move the point
+		// on a transformed shape (shapePin).
+		if (perimeter === false)
+		{
+			c.perimeter = false;
+		}
+
+		return c;
 	};
 
 	/**
@@ -329,6 +340,241 @@
 	};
 
 	/**
+	 * The transform a shape's style applies to its connection points, from a
+	 * plain map of draw.io style values (a parsed style or getCellStyle
+	 * result): rotation (degrees, clockwise), direction (north/south/west turn
+	 * the shape inside its bounds), flipH/flipV — plus the legacy
+	 * stencilFlipH/stencilFlipV when the shape is a stencil (stencil = true),
+	 * and anchorPointDirection=0, which keeps the connection points still
+	 * under a direction. Returns null for an untransformed shape. Set it as a
+	 * vertex's `frame` (computeRoutes, obstacleBounds, shapePin).
+	 */
+	AvoidRouting.shapeFrame = function(style, stencil)
+	{
+		if (style == null)
+		{
+			return null;
+		}
+
+		var rotation = parseFloat(style.rotation);
+		rotation = isNaN(rotation) ? 0 : ((rotation % 360) + 360) % 360;
+		var direction = (style.direction == 'north' || style.direction == 'south' ||
+			style.direction == 'west') ? style.direction : null;
+		var flipH = style.flipH == 1 || (stencil == true && style.stencilFlipH == 1);
+		var flipV = style.flipV == 1 || (stencil == true && style.stencilFlipV == 1);
+
+		if (rotation == 0 && direction == null && !flipH && !flipV)
+		{
+			return null;
+		}
+
+		return {rotation: rotation, direction: direction, flipH: flipH, flipV: flipV,
+			anchorPointDirection: style.anchorPointDirection == null ||
+				style.anchorPointDirection == 1,
+			legacy: style.legacyAnchorPoints == null || style.legacyAnchorPoints == 1};
+	};
+
+	// {cos, sin} of a clockwise turn in degrees, EXACT for multiples of 90
+	// (the common case) so mapped pins land exactly on the box's sides.
+	function turn(degrees)
+	{
+		var r = ((degrees % 360) + 360) % 360;
+
+		return (r == 0) ? {cos: 1, sin: 0} : ((r == 90) ? {cos: 0, sin: 1} :
+			((r == 180) ? {cos: -1, sin: 0} : ((r == 270) ? {cos: 0, sin: -1} :
+			{cos: Math.cos(r * Math.PI / 180), sin: Math.sin(r * Math.PI / 180)})));
+	}
+
+	/**
+	 * The obstacle box of vertex v ({x,y,w,h,frame?}): the bounding box of its
+	 * bounds rotated about their centre by frame.rotation (direction and flips
+	 * turn the drawing INSIDE the bounds, so they do not move it). v itself
+	 * when it is not rotated.
+	 */
+	AvoidRouting.obstacleBounds = function(v)
+	{
+		if (v == null || v.frame == null || !v.frame.rotation)
+		{
+			return v;
+		}
+
+		var t = turn(v.frame.rotation);
+		var w = Math.abs(v.w * t.cos) + Math.abs(v.h * t.sin);
+		var h = Math.abs(v.w * t.sin) + Math.abs(v.h * t.cos);
+
+		return {id: v.id, x: v.x + (v.w - w) / 2, y: v.y + (v.h - h) / 2, w: w, h: h};
+	};
+
+	/**
+	 * A pin {x, y, dir, perimeter?} given in vertex v's OWN frame (exitX/exitY,
+	 * a declared connection point — proportional, dir and perimeter from
+	 * constraintForPoint) mapped to where the shape draws it, as a pin on
+	 * obstacleBounds(v). Follows the renderer: draw.io's default
+	 * Graph.getLegacyConnectionPoint (frame.legacy) turns a point by the
+	 * shape's direction and rotation and applies the flips only to a point
+	 * NOT projected on the perimeter (perimeter false, i.e.
+	 * exitPerimeter=0) — the projection undoes them; with
+	 * legacyAnchorPoints=0, mxGraph.getConnectionPoint flips every point
+	 * first. Direction north/south place the point in the bounds with width
+	 * and height swapped (in legacy mode only while anchorPointDirection is
+	 * on), flips swap with them. The approach direction turns with the
+	 * point. The projection itself is not applied, as for unrotated shapes.
+	 * Returns pin unchanged when v has no frame. At angles other than
+	 * multiples of 90 the point lies inside the box and its direction snaps
+	 * to the nearest axis (both at 45).
+	 */
+	AvoidRouting.shapePin = function(v, pin)
+	{
+		var f = (v != null) ? v.frame : null;
+
+		if (f == null || pin == null)
+		{
+			return pin;
+		}
+
+		var turned = f.direction == 'north' || f.direction == 'south';
+		var swap = turned && (f.anchorPointDirection || !f.legacy);
+		var flip = !f.legacy || pin.perimeter === false;
+		var flipH = flip && (turned ? f.flipV : f.flipH);
+		var flipV = flip && (turned ? f.flipH : f.flipV);
+		var dx = (pin.x - 0.5) * (swap ? v.h : v.w);
+		var dy = (pin.y - 0.5) * (swap ? v.w : v.h);
+		var steps = (f.direction != null && f.anchorPointDirection) ?
+			((f.direction == 'north') ? 270 : ((f.direction == 'west') ? 180 : 90)) : 0;
+		var t = turn(f.rotation + steps);
+		var b = AvoidRouting.obstacleBounds(v);
+
+		function clean(value)
+		{
+			// Float noise off the exact sides, then the pin domain.
+			return AvoidRouting.clamp01(Math.round(value * 1e9) / 1e9);
+		}
+
+		dx = flipH ? -dx : dx;
+		dy = flipV ? -dy : dy;
+
+		var DIR = AvoidRouting.DIR;
+		var bits = [[DIR.up, 0, -1], [DIR.down, 0, 1], [DIR.left, -1, 0], [DIR.right, 1, 0]];
+		var dir = 0;
+
+		for (var i = 0; i < bits.length; i++)
+		{
+			if ((pin.dir & bits[i][0]) != 0)
+			{
+				var vx = flipH ? -bits[i][1] : bits[i][1];
+				var vy = flipV ? -bits[i][2] : bits[i][2];
+				var rx = vx * t.cos - vy * t.sin;
+				var ry = vx * t.sin + vy * t.cos;
+
+				if (Math.abs(rx) >= Math.abs(ry) - 1e-9)
+				{
+					dir |= (rx > 0) ? DIR.right : DIR.left;
+				}
+
+				if (Math.abs(ry) >= Math.abs(rx) - 1e-9)
+				{
+					dir |= (ry > 0) ? DIR.down : DIR.up;
+				}
+			}
+		}
+
+		return {x: clean((v.w / 2 + dx * t.cos - dy * t.sin + (v.x - b.x)) / b.w),
+			y: clean((v.h / 2 + dx * t.sin + dy * t.cos + (v.y - b.y)) / b.h),
+			dir: (dir != 0) ? dir : pin.dir};
+	};
+
+	/**
+	 * vertices and edges in the frame the solver works in: every vertex with
+	 * a frame becomes its obstacle box, and each end on such a vertex has its
+	 * constraint and snap points mapped (shapePin). Side masks are taken as
+	 * already in that frame (the editor resolves them with
+	 * portConstraintRotation). Returns new arrays; the inputs are not
+	 * modified, and they come back as they are when nothing is transformed.
+	 */
+	AvoidRouting.toWorldFrame = function(vertices, edges)
+	{
+		var framed = Object.create(null);
+		var boxes = [];
+		var any = false;
+		var i, k;
+
+		for (i = 0; i < vertices.length; i++)
+		{
+			var v = vertices[i];
+
+			if (v != null && v.frame != null)
+			{
+				framed[v.id] = v;
+				any = true;
+			}
+
+			boxes.push(AvoidRouting.obstacleBounds(v));
+		}
+
+		if (!any)
+		{
+			return {vertices: vertices, edges: edges};
+		}
+
+		function points(v, pts)
+		{
+			if (pts == null)
+			{
+				return pts;
+			}
+
+			var out = [];
+
+			for (var q = 0; q < pts.length; q++)
+			{
+				out.push(AvoidRouting.shapePin(v, {x: pts[q].x, y: pts[q].y,
+					dir: (pts[q].dir != null) ? pts[q].dir : AvoidRouting.DIR.all,
+					perimeter: pts[q].perimeter}));
+			}
+
+			return out;
+		}
+
+		var mapped = [];
+
+		for (i = 0; i < edges.length; i++)
+		{
+			var e = edges[i];
+			var s = (e != null) ? framed[e.source] : null;
+			var t = (e != null) ? framed[e.target] : null;
+
+			if (s == null && t == null)
+			{
+				mapped.push(e);
+				continue;
+			}
+
+			var c = {};
+
+			for (k in e)
+			{
+				c[k] = e[k];
+			}
+
+			if (s != null)
+			{
+				c.sourceConstraint = AvoidRouting.shapePin(s, e.sourceConstraint);
+				c.sourcePoints = points(s, e.sourcePoints);
+			}
+
+			if (t != null)
+			{
+				c.targetConstraint = AvoidRouting.shapePin(t, e.targetConstraint);
+				c.targetPoints = points(t, e.targetPoints);
+			}
+
+			mapped.push(c);
+		}
+
+		return {vertices: boxes, edges: mapped};
+	};
+
+	/**
 	 * The candidate pins of one end on bounds b ({x,y,w,h}), as proportional
 	 * {x, y, dir}, by the renderer's precedence: a fixed constraint (just its
 	 * anchor) wins over a snap-point set (the shape's declared connection
@@ -413,9 +659,13 @@
 	 * Compute obstacle-avoiding orthogonal routes for a set of edges.
 	 *
 	 * @param {object} Avoid - the libavoid instance (AvoidLib.getInstance()).
-	 * @param {Array<{id:string,x:number,y:number,w:number,h:number}>} vertices
-	 *        Obstacles, in ABSOLUTE coordinates. Shapes enclosing a terminal
-	 *        of a routed edge are dropped (filterEnclosing).
+	 * @param {Array<{id:string,x:number,y:number,w:number,h:number,frame?}>} vertices
+	 *        Obstacles, in ABSOLUTE coordinates: the UNROTATED bounds, with
+	 *        the shape's transform as frame (shapeFrame of its style) — the
+	 *        obstacle is then its rotated box and its ends' constraints and
+	 *        snap points, given in the shape's own frame, are mapped to where
+	 *        it draws them (toWorldFrame). Shapes enclosing a terminal of a
+	 *        routed edge are dropped (filterEnclosing).
 	 * @param {Array<{id,source,target,sourcePoint?,targetPoint?,
 	 *        sourceConstraint?,targetConstraint?,
 	 *        sourcePoints?,targetPoints?,sourceSides?,targetSides?,
@@ -469,6 +719,12 @@
 
 		var buffer = (opts && opts.shapeBufferDistance != null) ? opts.shapeBufferDistance : 16;
 		var nudge = (opts && opts.idealNudgingDistance != null) ? opts.idealNudgingDistance : 14;
+
+		// Rotated, turned and flipped shapes: route around the box they are
+		// drawn in, from the connection points where they are drawn.
+		var world = AvoidRouting.toWorldFrame(vertices, edges);
+		vertices = world.vertices;
+		edges = world.edges;
 
 		// Containers the terminals live in are not obstacles (also feeds the
 		// jettyStub checks below, so stubs inside a container are preserved).

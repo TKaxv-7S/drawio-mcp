@@ -177,9 +177,25 @@ function parseStyleMap(style)
 // param is the loaded AvoidRouting namespace (getRouting()).
 function fixedConstraint(Routing, styleMap, source)
 {
+  // exitPerimeter/entryPerimeter=0 lets a flip move the point on a
+  // transformed terminal (see shapeFrame); older cores ignore the argument.
   return Routing.constraintForPoint(
     parseFloat(styleMap[source ? "exitX" : "entryX"]),
-    parseFloat(styleMap[source ? "exitY" : "entryY"]));
+    parseFloat(styleMap[source ? "exitY" : "entryY"]),
+    styleMap[source ? "exitPerimeter" : "entryPerimeter"] != "0");
+}
+
+// The transform a vertex's style applies to its connection points —
+// rotation, direction, flips (AvoidRouting.shapeFrame) — so the core routes
+// around the box the shape is drawn in and pins each end where the shape
+// draws its connection point. Legacy stencilFlipH/V need to know whether the
+// shape is a stencil, which only a renderer does; they are ignored here. A
+// core from before rotation support has no shapeFrame: the shape then
+// routes unrotated, as it always did.
+function shapeFrame(Routing, style)
+{
+  return (typeof Routing.shapeFrame === "function") ?
+    Routing.shapeFrame(style, false) : null;
 }
 
 // Resolved jetty size (minimum first/last segment length, px) for one end,
@@ -325,9 +341,12 @@ function routeGraph(graph, Routing, Avoid, mx)
 
       if (geo != null && geo.width > 0 && geo.height > 0)
       {
+        // Unrotated bounds plus the style's transform (named styles
+        // resolved by getCellStyle): the core turns them into the drawn box.
         var off = parentOffset(model, cell);
         vertices.push({ id: id, x: geo.x + off.x, y: geo.y + off.y,
-          w: geo.width, h: geo.height });
+          w: geo.width, h: geo.height,
+          frame: shapeFrame(Routing, graph.getCellStyle(cell)) });
       }
     }
     else if (model.isEdge(cell))

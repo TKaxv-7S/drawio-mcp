@@ -1715,9 +1715,27 @@ function getAbsoluteModelBounds(graph, cell)
  */
 function libavoidFixedConstraint(style, source)
 {
+  // exitPerimeter/entryPerimeter=0 lets a flip move the point on a
+  // transformed terminal (see libavoidShapeFrame); older cores ignore it.
   return AvoidRouting.constraintForPoint(
     parseFloat(mxUtils.getValue(style, source ? 'exitX' : 'entryX', null)),
-    parseFloat(mxUtils.getValue(style, source ? 'exitY' : 'entryY', null)));
+    parseFloat(mxUtils.getValue(style, source ? 'exitY' : 'entryY', null)),
+    mxUtils.getValue(style, source ? 'exitPerimeter' : 'entryPerimeter', 1) != 0);
+}
+
+// The transform a vertex's style applies to its connection points
+// (rotation, direction, flips — AvoidRouting.shapeFrame), so the core routes
+// around the box the shape is drawn in and pins each end where the shape
+// draws its connection point. A core from before rotation support (an older
+// CDN release) has no shapeFrame: the shape then routes unrotated.
+function libavoidShapeFrame(graph, cell)
+{
+  if (typeof AvoidRouting.shapeFrame !== 'function') return null;
+
+  var state = graph.view.getState(cell);
+
+  return AvoidRouting.shapeFrame(graph.getCellStyle(cell),
+    state != null && state.shape != null && state.shape.stencil != null);
 }
 
 /**
@@ -1786,7 +1804,10 @@ function routeWithLibavoid(graph, Avoid)
       var b = getAbsoluteModelBounds(graph, c);
       if (b != null && b.w > 0 && b.h > 0)
       {
-        vertices.push({ id: id, x: b.x, y: b.y, w: b.w, h: b.h });
+        // Unrotated bounds plus the style's transform: the core turns them
+        // into the drawn box.
+        vertices.push({ id: id, x: b.x, y: b.y, w: b.w, h: b.h,
+          frame: libavoidShapeFrame(graph, c) });
       }
     }
     else if (c.edge)
