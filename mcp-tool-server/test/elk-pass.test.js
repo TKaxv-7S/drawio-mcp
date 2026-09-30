@@ -116,6 +116,17 @@ test("edges get waypoints and the canonical orthogonal style", needsElk, async f
   assert.match(after, /<mxCell id="e1"[\s\S]*?<Array as="points"><mxPoint /);
 });
 
+test("entities in a restyled edge's style are written back escaped once",
+  needsElk, async function ()
+{
+  const xml = FLOW.replace('<mxCell id="e1" edge="1"',
+    '<mxCell id="e1" style="fontFamily=A &amp; B;" edge="1"');
+  const after = await layoutXml(xml);
+
+  assert.match(after, /<mxCell id="e1" style="fontFamily=A &amp; B;[^"]*edgeStyle=orthogonalEdgeStyle/);
+  assert.ok(!after.includes("&amp;amp;"), "the style was escaped twice");
+});
+
 test("laying out twice changes nothing the second time", needsElk, async function ()
 {
   const once = await layoutXml(FLOW);

@@ -114,6 +114,17 @@ test("an edge label's offset survives routing", async function ()
   assert.match(after, /<mxPoint x="5" y="-5" as="offset" \/><\/mxGeometry>/);
 });
 
+test("entities in a routed edge's style are written back escaped once",
+  async function ()
+{
+  const xml = scene(100).replace('entryY=0.5;"', 'entryY=0.5;fontFamily=A &amp; B;"');
+  const after = await routeXml(xml);
+
+  assert.match(after, /<mxCell id="edge"[^>]*style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontFamily=A &amp; B;edgeStyle=orthogonalEdgeStyle;/);
+  assert.ok(!after.includes("&amp;amp;"), "the style was escaped twice");
+  assert.deepEqual(points(after, "edge"), points(await routeXml(scene(100)), "edge"));
+});
+
 // ─── Pages (#73) ─────────────────────────────────────────────────
 
 test("pages reusing cell ids route exactly as they do alone", async function ()

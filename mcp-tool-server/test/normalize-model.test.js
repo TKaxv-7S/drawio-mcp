@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeDiagram } from "../../shared/normalize-model.js";
+import { transformPages } from "../../shared/mx-xml.js";
 
 // A container tree like the one in jgraph/drawio-mcp#64:
 //   layer 1
@@ -160,6 +161,70 @@ test("every page of a multi-page file is normalized", function ()
   assert.equal(result.changed, 2);
   assert.equal((result.xml.match(/id="e2"[^>]*parent="vpc"/g) || []).length, 2);
   assert.match(result.xml, /<diagram id="p2" name="Two">/);
+});
+
+// ─── Entities in attribute values ────────────────────────────────
+
+test("a reparented edge keeps its style's entities byte-for-byte", function ()
+{
+  const style = "html=1;fontFamily=A &amp; B;tooltip=&quot;x&quot;&#xa;y;";
+  const xml = fixture(edge("e2", "alb", "ecs", "1")
+    .replace('style="html=1;"', 'style="' + style + '"'));
+  const once = normalizeDiagram(xml);
+
+  assert.equal(once.changed, 1);
+  assert.equal(parentOf(once.xml, "e2"), "vpc");
+  assert.match(once.xml, new RegExp('<mxCell id="e2" style="' + style + '" edge="1" parent="vpc"'));
+  assert.equal(normalizeDiagram(once.xml).xml, once.xml);
+});
+
+test("an id with an entity is written back escaped once", function ()
+{
+  // Both terminals sit in "R&D", so the edge is filed there.
+  const xml = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>' +
+    '<mxCell id="R&amp;D" value="R&amp;D" style="html=1;" vertex="1" parent="1">' +
+    '<mxGeometry x="0" y="0" width="400" height="200" as="geometry"/></mxCell>' +
+    '<mxCell id="a" style="html=1;" vertex="1" parent="R&amp;D">' +
+    '<mxGeometry x="20" y="20" width="80" height="40" as="geometry"/></mxCell>' +
+    '<mxCell id="b" style="html=1;" vertex="1" parent="R&amp;D">' +
+    '<mxGeometry x="200" y="20" width="80" height="40" as="geometry"/></mxCell>' +
+    edge("e", "a", "b", "1") + "</root></mxGraphModel>";
+
+  const once = normalizeDiagram(xml);
+
+  assert.equal(once.changed, 1);
+  assert.equal(parentOf(once.xml, "e"), "R&amp;D");
+  assert.equal(normalizeDiagram(once.xml).changed, 0);
+});
+
+test("styles reach the model decoded and are re-encoded on write-back",
+  function ()
+{
+  const xml = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>' +
+    '<mxCell id="a" style="fontFamily=A &amp; B;spacing=4;" vertex="1" parent="1">' +
+    '<mxGeometry width="80" height="40" as="geometry"/></mxCell>' +
+    '<mxCell id="b" style="fontFamily=A &amp; B;" vertex="1" parent="1">' +
+    '<mxGeometry x="200" width="80" height="40" as="geometry"/></mxCell>' +
+    "</root></mxGraphModel>";
+  let seen = null;
+
+  const result = transformPages(xml, function (graph)
+  {
+    const model = graph.getModel();
+    const a = model.getChildAt(graph.getDefaultParent(), 0);
+
+    assert.equal(a.id, "a");
+    seen = graph.getCellStyle(a);
+    model.setStyle(a, model.getStyle(a) + "tooltip=1 < 2\n\"3\" $&;");
+  });
+
+  // `&amp;` is one `&`, not the end of a style token.
+  assert.equal(seen.fontFamily, "A & B");
+  assert.equal(seen.spacing, 4);
+  assert.equal(result.changed, 1);
+  assert.ok(result.xml.includes('<mxCell id="a" style="fontFamily=A &amp; B;spacing=4;' +
+    'tooltip=1 &lt; 2&#xa;&quot;3&quot; $&amp;;"'));
+  assert.match(result.xml, /<mxCell id="b" style="fontFamily=A &amp; B;"/);
 });
 
 // ─── Edges written without a geometry ────────────────────────────

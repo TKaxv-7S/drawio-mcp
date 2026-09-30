@@ -35,23 +35,45 @@ export function parseAttrs(s)
   return attrs;
 }
 
+var XML_ENTITIES = { lt: "<", gt: ">", quot: "\"", apos: "'", amp: "&" };
+
+// Attribute values are kept decoded in the model - a style's `&amp;` is one
+// `&` to every style parser, not a `;`-terminated token - and re-encoded by
+// escapeXml when a pass writes one back. One pass, so `&amp;lt;` decodes to
+// `&lt;`, not `<`. Anything that isn't a known entity is left as written.
 function unescapeXml(s)
 {
-  return String(s)
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, "\"")
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
+  return String(s).replace(/&(#x[0-9a-fA-F]+|#[0-9]+|[a-z]+);/g, function(m, e)
+  {
+    if (e.charAt(0) !== "#")
+    {
+      return (XML_ENTITIES[e] != null) ? XML_ENTITIES[e] : m;
+    }
+
+    var code = (e.charAt(1) === "x") ? parseInt(e.substring(2), 16) :
+      parseInt(e.substring(1), 10);
+
+    return (code > 0 && code <= 0x10FFFF) ? String.fromCodePoint(code) : m;
+  });
 }
 
+function decoded(v)
+{
+  return (v != null) ? unescapeXml(v) : null;
+}
+
+// Line breaks and tabs are written as character references: a literal one in
+// an attribute value is read back as a space (XML attribute normalization).
 function escapeXml(s)
 {
   return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/\n/g, "&#xa;")
+    .replace(/\r/g, "&#xd;")
+    .replace(/\t/g, "&#x9;");
 }
 
 function num(v, fallback)
@@ -136,6 +158,8 @@ function parseCells(text)
 
     var attrs = parseAttrs(m[1]);
 
+    // Values the model holds are decoded; the write-back compares against
+    // these to tell what a pass changed, and re-encodes only that.
     cells.push({
       start: m.index,
       end: m.index + m[0].length,
@@ -143,10 +167,14 @@ function parseCells(text)
       attrs: attrs,
       selfClosing: m[2] === "/>",
       body: m[3] || "",
-      id: (attrs.id != null) ? attrs.id :
-        ((wrapper != null) ? wrapper.attrs.id : null),
-      label: (attrs.value != null) ? attrs.value :
-        ((wrapper != null) ? wrapper.attrs.label : null),
+      id: decoded((attrs.id != null) ? attrs.id :
+        ((wrapper != null) ? wrapper.attrs.id : null)),
+      label: decoded((attrs.value != null) ? attrs.value :
+        ((wrapper != null) ? wrapper.attrs.label : null)),
+      style: decoded(attrs.style || null),
+      parent: decoded(attrs.parent),
+      source: decoded(attrs.source),
+      target: decoded(attrs.target),
     });
   }
 
@@ -228,16 +256,15 @@ export function buildModel(cells)
 
     if (c.id == null || byId.has(c.id)) continue;
 
-    var cell = new MxCell(c.id,
-      (c.label != null) ? unescapeXml(c.label) : null, c.attrs.style || null);
+    var cell = new MxCell(c.id, c.label, c.style);
 
     cell.vertex = c.attrs.vertex === "1";
     cell.edge = c.attrs.edge === "1";
     cell.visible = c.attrs.visible !== "0";
     cell.geometry = parseGeometry(c.body);
-    cell.source_ = c.attrs.source;
-    cell.target_ = c.attrs.target;
-    cell.parent_ = c.attrs.parent;
+    cell.source_ = c.source;
+    cell.target_ = c.target;
+    cell.parent_ = c.parent;
     cell.block = c;
     c.cell = cell;
 
@@ -392,9 +419,13 @@ function withAttr(rawAttrs, name, value)
   var escaped = escapeXml(value);
   var re = new RegExp("\\b" + name + '\\s*=\\s*"[^"]*"');
 
+  // A function replacement, so a `$&` in the value is taken literally.
   if (re.test(rawAttrs))
   {
-    return rawAttrs.replace(re, name + '="' + escaped + '"');
+    return rawAttrs.replace(re, function()
+    {
+      return name + '="' + escaped + '"';
+    });
   }
 
   return rawAttrs + " " + name + '="' + escaped + '"';
@@ -409,12 +440,14 @@ function buildCellBlock(cell, geometryChanged)
   var block = cell.block;
   var rawAttrs = block.rawAttrs;
 
-  if (cell.style !== (block.attrs.style || null))
+  // Both sides decoded: an attribute no pass touched keeps its bytes exactly
+  // as authored, entities and all.
+  if (cell.style !== block.style)
   {
     rawAttrs = withAttr(rawAttrs, "style", cell.style || "");
   }
 
-  if (cell.parent != null && cell.parent.id !== block.attrs.parent)
+  if (cell.parent != null && cell.parent.id !== block.parent)
   {
     rawAttrs = withAttr(rawAttrs, "parent", cell.parent.id);
   }
