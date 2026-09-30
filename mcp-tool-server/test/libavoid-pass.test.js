@@ -250,3 +250,61 @@ test("a page routes the same whatever the process routed before",
       "routing call " + i + " came out different");
   }
 });
+
+// ─── Unroutable connectors ───────────────────────────────────────
+
+test("connectors sharing one connection point each get a route",
+  async function ()
+{
+  // Two pins at one point broke libavoid's visibility sweep and left the
+  // connector registered second without a route; ends on the same anchor
+  // now share one pin.
+  const R = [1, 0.5], L = [0, 0.5];
+  const xml = '<mxGraphModel adaptiveColors="auto">' + root(
+    vertex("hub", 0, 100, 100, 60) + vertex("up", 300, 0, 100, 20) +
+    vertex("down", 300, 250, 100, 20) +
+    wire("first", "hub", "up", R, L) + wire("second", "hub", "down", R, L)) +
+    "</mxGraphModel>";
+  const after = await routeXml(xml);
+
+  assert.deepEqual(points(after, "first"), [[200, 130], [200, 10]]);
+  assert.deepEqual(points(after, "second"), [[200, 130], [200, 260]]);
+});
+
+test("a pin facing a gap narrower than the clearance is still routed",
+  async function ()
+{
+  // The target's right-hand pin faces a marker 30px away: at the default
+  // 16px buffer the channel needs 32px, so the connector is retried at a
+  // smaller clearance instead of being left unrouted.
+  const R = [1, 0.5];
+  const xml = '<mxGraphModel adaptiveColors="auto">' + root(
+    vertex("source", 0, 100, 100, 20) + vertex("target", 300, 300, 100, 20) +
+    vertex("marker", 430, 280, 60, 60) +
+    wire("edge", "source", "target", R, R)) + "</mxGraphModel>";
+  const route = points(await routeXml(xml), "edge");
+  const [lastX, lastY] = route[route.length - 1];
+
+  // Into the gap beside the target, level with its pin.
+  assert.ok(lastX > 400 && lastX < 430, "last bend at x=" + lastX);
+  assert.equal(lastY, 310);
+});
+
+test("an edge that cannot be routed keeps its authored geometry",
+  async function ()
+{
+  // The target is walled in on all four sides: no route exists at any
+  // clearance, and libavoid answers with a straight line between the end
+  // vertices, which must not be written over the author's waypoints.
+  const edge = '<mxCell id="edge" edge="1" parent="1" source="source" ' +
+    'target="target" style="exitX=1;exitY=0.5;entryX=0;entryY=0.5;">' +
+    '<mxGeometry relative="1" as="geometry"><Array as="points">' +
+    '<mxPoint x="200" y="20"/></Array></mxGeometry></mxCell>';
+  const xml = '<mxGraphModel adaptiveColors="auto">' + root(
+    vertex("source", 0, 100, 100, 60) + vertex("target", 300, 100, 100, 60) +
+    vertex("north", 240, 40, 220, 20) + vertex("south", 240, 200, 220, 20) +
+    vertex("west", 240, 60, 20, 140) + vertex("east", 440, 60, 20, 140) +
+    edge) + "</mxGraphModel>";
+
+  assert.ok((await routeXml(xml)).includes(edge), "the edge was rewritten");
+});

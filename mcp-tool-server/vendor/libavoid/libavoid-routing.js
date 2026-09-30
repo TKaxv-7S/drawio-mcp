@@ -329,6 +329,87 @@
 	};
 
 	/**
+	 * The candidate pins of one end on bounds b ({x,y,w,h}), as proportional
+	 * {x, y, dir}, by the renderer's precedence: a fixed constraint (just its
+	 * anchor) wins over a snap-point set (the shape's declared connection
+	 * points, dir defaulting to DIR.all), which wins over a side mask (pins
+	 * along every allowed side, maskPinPoints). Returns null for a floating
+	 * end (none of the three).
+	 */
+	AvoidRouting.endPins = function(b, constraint, sides, points)
+	{
+		if (constraint != null && constraint.dir != null)
+		{
+			return [constraint];
+		}
+
+		var pins = [];
+		var i;
+
+		if (points != null && points.length > 0)
+		{
+			for (i = 0; i < points.length; i++)
+			{
+				pins.push({x: points[i].x, y: points[i].y,
+					dir: (points[i].dir != null) ? points[i].dir : AvoidRouting.DIR.all});
+			}
+
+			return pins;
+		}
+
+		if (sides != null && sides.length > 0)
+		{
+			for (i = 0; i < sides.length; i++)
+			{
+				pins = pins.concat(AvoidRouting.maskPinPoints(sides[i], b));
+			}
+
+			return pins;
+		}
+
+		return null;
+	};
+
+	/**
+	 * True when a route is libavoid's NO-ROUTE fallback instead of a route.
+	 * When the search finds no path, libavoid returns the straight segment
+	 * between the connector's two end vertices; for a pinned end that vertex
+	 * is the pin class's dummy at the shape CENTRE, not a pin. A real
+	 * orthogonal route is axis-aligned and starts/ends ON one of a pinned
+	 * end's pins. pts: the route's absolute points. sourcePins/targetPins:
+	 * the pinned ends' absolute pin positions ({x, y}), null for a floating
+	 * or dangling end — whose fallback is only recognisable when diagonal.
+	 */
+	AvoidRouting.isFallbackRoute = function(pts, sourcePins, targetPins)
+	{
+		if (pts == null || pts.length != 2)
+		{
+			return false;
+		}
+
+		function onPin(p, pins)
+		{
+			if (pins == null)
+			{
+				return true;
+			}
+
+			for (var i = 0; i < pins.length; i++)
+			{
+				if (Math.abs(p.x - pins[i].x) < 0.5 && Math.abs(p.y - pins[i].y) < 0.5)
+				{
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		return (Math.abs(pts[0].x - pts[1].x) >= 0.5 && Math.abs(pts[0].y - pts[1].y) >= 0.5) ||
+			!onPin(pts[0], sourcePins) || !onPin(pts[1], targetPins);
+	};
+
+	/**
 	 * Compute obstacle-avoiding orthogonal routes for a set of edges.
 	 *
 	 * @param {object} Avoid - the libavoid instance (AvoidLib.getInstance()).
@@ -365,14 +446,17 @@
 	 *        lazily, only for edges whose natural route falls short of the
 	 *        minimum; snapped and masked ends behave like floating ones here
 	 *        (their first bend naturally sits ~shapeBufferDistance out).
+	 *        Ends with the same candidate pins on one shape share them.
 	 * @param {{shapeBufferDistance?:number,idealNudgingDistance?:number}} [opts]
-	 *        Defaults: 16 / 14.
+	 *        Defaults: 16 / 14. A connector libavoid finds no route for is
+	 *        retried alone at half the buffer, down to 2px.
 	 * @returns {Object<string, Array<{x:number,y:number}>>} edge id -> interior
 	 *        bend points (ABSOLUTE, collinear-filtered). The first/last route
 	 *        points (endpoints) are dropped — a floating endpoint connects at
 	 *        the shape side midpoint, which is where a floating
 	 *        orthogonalEdgeStyle endpoint lands anyway. An edge with a
-	 *        straight (bend-free) route maps to [].
+	 *        straight (bend-free) route maps to []; an edge libavoid found no
+	 *        route for even on retry has NO entry, like a skipped one.
 	 */
 	AvoidRouting.computeRoutes = function(Avoid, vertices, edges, opts)
 	{
@@ -396,159 +480,13 @@
 			return Math.abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) < 1;
 		}
 
-		var router = new Avoid.Router(Avoid.RouterFlag.OrthogonalRouting.value);
-
-		try { router.setRoutingParameter(Avoid.RoutingParameter.shapeBufferDistance, buffer); } catch (e) {}
-		try { router.setRoutingParameter(Avoid.RoutingParameter.idealNudgingDistance, nudge); } catch (e) {}
-
-		var bounds = Object.create(null);
-		var shapeRefs = Object.create(null);
-		var pinClass = 0;
-		var i;
-
-		for (i = 0; i < vertices.length; i++)
-		{
-			var v = vertices[i];
-
-			if (v == null || v.id == null || !(v.w > 0) || !(v.h > 0))
-			{
-				continue;
-			}
-
-			bounds[v.id] = v;
-			// Point/Rectangle are embind value wrappers that COPY into the
-			// ShapeRef and are NOT freed by router.delete(); free the temporaries.
-			var rp1 = new Avoid.Point(v.x, v.y);
-			var rp2 = new Avoid.Point(v.x + v.w, v.y + v.h);
-			var rect = new Avoid.Rectangle(rp1, rp2);
-			shapeRefs[v.id] = new Avoid.ShapeRef(router, rect);
-			rect.delete();
-			rp1.delete();
-			rp2.delete();
-		}
-
-		// An endpoint is FLOATING (ConnEnd at the shape centre) unless the edge
-		// gives a fixed connection point — a directed ShapeConnectionPin makes
-		// the route leave/enter the anchor perpendicular to the shape edge
-		// instead of cutting through it — a snap-point set (draw.io's
-		// snapToPoint: the shape's declared connection points as candidate
-		// anchors, one non-exclusive directed pin each, sharing ONE pin class
-		// so libavoid picks the anchor that routes best) — or a side MASK (the
-		// legacy mxGraph portConstraint vocabulary): pins spread along every
-		// allowed side (maskPinPoints), all sharing ONE pin class, so libavoid
-		// picks the side and the position that route best. Snap/mask pins are
-		// non-exclusive: several edges may share a pin and nudging separates
-		// their corridors, like the render-time router spreading floating
-		// attaches. Precedence per end mirrors the renderer: a fixed
-		// constraint (pinned exit/entry) wins over both, and a snap-point set
-		// wins over a mask (the snapToPoint branch of
-		// updateFloatingTerminalPoint runs before any mask enforcement).
-		function makeEnd(vid, b, constraint, sides, points, freePoint)
-		{
-			// Dangling end: no vertex bounds, just a free point (the edge's
-			// unconnected endpoint). Route to a plain Point ConnEnd — no shape,
-			// no direction — exactly as the warm-session drag preview does, so a
-			// committed edge with an unconnected end matches its live preview.
-			if (b == null)
-			{
-				var dp = new Avoid.Point(freePoint.x, freePoint.y);
-				var dce = new Avoid.ConnEnd(dp);
-				dp.delete();
-				return dce;
-			}
-
-			if (constraint != null && constraint.dir != null && shapeRefs[vid] != null)
-			{
-				pinClass++;
-				new Avoid.ShapeConnectionPin(shapeRefs[vid], pinClass,
-					constraint.x, constraint.y, true, 0, constraint.dir);
-				return new Avoid.ConnEnd(shapeRefs[vid], pinClass);
-			}
-
-			if (points != null && points.length > 0 && shapeRefs[vid] != null)
-			{
-				pinClass++;
-
-				for (var q = 0; q < points.length; q++)
-				{
-					// Registers itself with the ShapeRef (freed with the
-					// router), like the mask pins below.
-					var spin = new Avoid.ShapeConnectionPin(shapeRefs[vid],
-						pinClass, points[q].x, points[q].y, true, 0,
-						(points[q].dir != null) ? points[q].dir : AvoidRouting.DIR.all);
-					spin.setExclusive(false);
-				}
-
-				return new Avoid.ConnEnd(shapeRefs[vid], pinClass);
-			}
-
-			if (sides != null && sides.length > 0 && shapeRefs[vid] != null)
-			{
-				pinClass++;
-
-				for (var s = 0; s < sides.length; s++)
-				{
-					var pts = AvoidRouting.maskPinPoints(sides[s], b);
-
-					for (var p = 0; p < pts.length; p++)
-					{
-						// The pin registers itself with the ShapeRef (freed
-						// with the router); the wrapper is only kept long
-						// enough to make it shareable.
-						var pin = new Avoid.ShapeConnectionPin(shapeRefs[vid],
-							pinClass, pts[p].x, pts[p].y, true, 0, pts[p].dir);
-						pin.setExclusive(false);
-					}
-				}
-
-				return new Avoid.ConnEnd(shapeRefs[vid], pinClass);
-			}
-
-			// Free the temporary centre Point (copied into the ConnEnd); the
-			// ConnEnd itself is freed by the ConnRef caller below.
-			var cp = new Avoid.Point(b.x + b.w / 2, b.y + b.h / 2);
-			var ce = new Avoid.ConnEnd(cp);
-			cp.delete();
-
-			return ce;
-		}
-
-		// Endpoint anchor: the free point for a dangling end, else the fixed
-		// connection point, else the shape centre — the point the ConnEnd routes
-		// from.
-		function anchor(b, constraint, freePoint)
-		{
-			if (b == null)
-			{
-				return freePoint;
-			}
-
-			return (constraint != null) ?
-				{x: b.x + constraint.x * b.w, y: b.y + constraint.y * b.h} :
-				{x: b.x + b.w / 2, y: b.y + b.h / 2};
-		}
-
-		// Wrap a stub tip as a routing checkpoint. Checkpoint copies the Point
-		// and the vector copies the Checkpoint — free both embind wrappers.
-		function addCheckpoint(vec, p)
-		{
-			if (p != null)
-			{
-				var pt = new Avoid.Point(p.x, p.y);
-				var cp = new Avoid.Checkpoint(pt);
-				vec.push_back(cp);
-				cp.delete();
-				pt.delete();
-			}
-		}
-
 		// A connector's display route as plain {x, y} points, freeing exactly
 		// what the binding hands over: displayRoute() and PolyLine.at() are
 		// UNOWNED references in draw.io's own binding (drawio-libavoid: the
 		// editor, the mcp app server) — deleting one destroys the route in
 		// place — and a fresh OWNED copy per call in the upstream libavoid-js
 		// build (the mcp tool server). Two calls alias one object only for
-		// references (isAliasOf), probed once per solve. A leaked copy is not
+		// references (isAliasOf), probed once per call. A leaked copy is not
 		// just memory: libavoid breaks ties between equal coordinates by
 		// object address, so it moved the next solve's allocations and a
 		// long-lived module routed identical input differently.
@@ -603,116 +541,7 @@
 			return pts;
 		}
 
-		var conns = [];
-
-		for (i = 0; i < edges.length; i++)
-		{
-			var e = edges[i];
-
-			if (e == null)
-			{
-				continue;
-			}
-
-			var sb = bounds[e.source];
-			var tb = bounds[e.target];
-
-			// An end is either a known vertex (sb/tb) or a dangling free point
-			// (e.sourcePoint / e.targetPoint, absolute coords) for an unconnected
-			// endpoint. Skip only when an end is neither.
-			if ((sb == null && e.sourcePoint == null) ||
-				(tb == null && e.targetPoint == null))
-			{
-				continue;
-			}
-
-			// Self-loops are out of scope: obstacle avoidance between identical
-			// endpoints is meaningless and the orthogonal router degenerates to
-			// a buffer-sized hook beside the shape. Skipping leaves the caller's
-			// loop styling and waypoints untouched (an edge with no route entry
-			// is never written), e.g. draw.io's inner-loop-waypoint self-loops.
-			if (e.source != null && e.source === e.target)
-			{
-				continue;
-			}
-
-			// ConnRef copies the ConnEnds, so free them after construction
-			// (they are not owned by the router).
-			var se = makeEnd(e.source, sb, e.sourceConstraint, e.sourceSides, e.sourcePoints, e.sourcePoint);
-			var de = makeEnd(e.target, tb, e.targetConstraint, e.targetSides, e.targetPoints, e.targetPoint);
-			var conn = new Avoid.ConnRef(router, se, de);
-			se.delete();
-			de.delete();
-
-			// Jetty stubs: force the route through a checkpoint jetty px
-			// outward of each constrained anchor, so the first/last segment is
-			// at least that long. Capped per end to the clearance the terminal
-			// pair's gap allows along the stub's axis (cappedJetty). Skipped
-			// for ends where there is nothing to enforce (jettyStub), and for
-			// the whole edge when the anchors are closer than the summed
-			// stubs — the same too-short guard as mxEdgeStyle.OrthConnector —
-			// so a short edge isn't forced to double back through its
-			// checkpoints. The stubs are computed here but requested LAZILY
-			// after the first solve (see below).
-			var sourceJetty = AvoidRouting.cappedJetty(e.sourceJetty, e.sourceConstraint, sb, tb);
-			var targetJetty = AvoidRouting.cappedJetty(e.targetJetty, e.targetConstraint, tb, sb);
-			var sa = anchor(sb, e.sourceConstraint, e.sourcePoint);
-			var ta = anchor(tb, e.targetConstraint, e.targetPoint);
-
-			// A pinned anchor buried inside ANOTHER obstacle (a shape dragged
-			// over the terminal) puts the whole route into libavoid's escape /
-			// degenerate mode: checkpoints on such a route are unreachable and
-			// libavoid warns ("skipping checkpoint") for EVERY end — including
-			// tips in perfectly clear space — before discarding them. Skip BOTH
-			// stubs for the edge instead (verified against the WASM: same
-			// route, no console noise).
-			var buried = (e.sourceConstraint != null &&
-					AvoidRouting.insideAny(sa.x, sa.y, vertices)) ||
-				(e.targetConstraint != null &&
-					AvoidRouting.insideAny(ta.x, ta.y, vertices));
-
-			var scp = buried ? null :
-				AvoidRouting.jettyStub(e.sourceConstraint, sourceJetty, sb, vertices, buffer);
-			var tcp = buried ? null :
-				AvoidRouting.jettyStub(e.targetConstraint, targetJetty, tb, vertices, buffer);
-
-			if (scp != null || tcp != null)
-			{
-				var dx = ta.x - sa.x;
-				var dy = ta.y - sa.y;
-				var total = ((scp != null) ? sourceJetty : 0) +
-					((tcp != null) ? targetJetty : 0);
-
-				if (dx * dx + dy * dy < total * total)
-				{
-					scp = null;
-					tcp = null;
-				}
-			}
-
-			conns.push({id: e.id, conn: conn, scp: scp, tcp: tcp,
-				sourceJetty: sourceJetty, targetJetty: targetJetty});
-		}
-
-		if (conns.length === 0)
-		{
-			router.delete();
-			return out;
-		}
-
-		router.processTransaction();
-
-		// LAZY jetty enforcement: the first solve runs WITHOUT the stub
-		// checkpoints; they are requested only for edges whose natural route
-		// violates a jetty minimum, and the transaction re-processed once. A
-		// checkpoint is a hard point the route must touch: when libavoid
-		// TURNS at one instead of crossing it mid-segment, the adjacent bend
-		// is pinned at the stub tip and nudging cannot center the segment in
-		// its channel — lopsided lead-outs (e.g. 30/10 on one edge next to a
-		// centered 20/20 twin) on routes that met the minimum for free.
-		// Enforcing lazily keeps the nudged, evenly distributed route
-		// wherever it already satisfies the jetty, and falls back to the
-		// checkpointed solve only where it does not.
+		// Length of a route's first/last straight run (jetty check below).
 		function endSegment(route, atStart)
 		{
 			var n = route.length;
@@ -746,59 +575,368 @@
 			return len;
 		}
 
-		var dirty = false;
-
-		for (i = 0; i < conns.length; i++)
+		// Proportional pins on bounds b as absolute {x, y} (null stays null).
+		function absolutePins(b, pins)
 		{
-			var c = conns[i];
-
-			if (c.scp == null && c.tcp == null)
+			if (pins == null)
 			{
-				continue;
+				return null;
 			}
 
-			// 0.5px tolerance: sub-pixel misses vanish in the output rounding
-			// and do not warrant pinning the route to the checkpoints.
-			var r0 = readRoute(c.conn);
+			var abs = [];
 
-			if ((c.scp != null && endSegment(r0, true) < c.sourceJetty - 0.5) ||
-				(c.tcp != null && endSegment(r0, false) < c.targetJetty - 0.5))
+			for (var k = 0; k < pins.length; k++)
 			{
-				// In route order (source first); setRoutingCheckpoints copies
-				// the vector, so free the wrapper.
-				var cps = new Avoid.CheckpointVector();
-				addCheckpoint(cps, c.scp);
-				addCheckpoint(cps, c.tcp);
-				c.conn.setRoutingCheckpoints(cps);
-				cps.delete();
-				dirty = true;
+				abs.push({x: b.x + pins[k].x * b.w, y: b.y + pins[k].y * b.h});
 			}
+
+			return abs;
 		}
 
-		if (dirty)
+		// Endpoint anchor: the free point for a dangling end, else the fixed
+		// connection point, else the shape centre — the point the ConnEnd routes
+		// from.
+		function anchor(b, constraint, freePoint)
 		{
-			router.processTransaction();
-		}
-
-		for (i = 0; i < conns.length; i++)
-		{
-			var pts = readRoute(conns[i].conn);
-			var wps = [];
-
-			for (var k = 1; k < pts.length - 1; k++)
+			if (b == null)
 			{
-				if (collinear(pts[k - 1], pts[k], pts[k + 1]))
+				return freePoint;
+			}
+
+			return (constraint != null) ?
+				{x: b.x + constraint.x * b.w, y: b.y + constraint.y * b.h} :
+				{x: b.x + b.w / 2, y: b.y + b.h / 2};
+		}
+
+		// One libavoid solve of batch at the given clearance. Writes the routed
+		// edges into out; returns the edges libavoid found NO route for
+		// (isFallbackRoute), in batch order, for the retry below.
+		function solve(batch, clearance)
+		{
+			var router = new Avoid.Router(Avoid.RouterFlag.OrthogonalRouting.value);
+
+			try { router.setRoutingParameter(Avoid.RoutingParameter.shapeBufferDistance, clearance); } catch (e) {}
+			try { router.setRoutingParameter(Avoid.RoutingParameter.idealNudgingDistance, nudge); } catch (e) {}
+
+			var bounds = Object.create(null);
+			var shapeRefs = Object.create(null);
+			var pinClasses = Object.create(null);
+			var pinClass = 0;
+			var i;
+
+			for (i = 0; i < vertices.length; i++)
+			{
+				var v = vertices[i];
+
+				if (v == null || v.id == null || !(v.w > 0) || !(v.h > 0))
 				{
 					continue;
 				}
 
-				wps.push({x: Math.round(pts[k].x), y: Math.round(pts[k].y)});
+				bounds[v.id] = v;
+				// Point/Rectangle are embind value wrappers that COPY into the
+				// ShapeRef and are NOT freed by router.delete(); free the temporaries.
+				var rp1 = new Avoid.Point(v.x, v.y);
+				var rp2 = new Avoid.Point(v.x + v.w, v.y + v.h);
+				var rect = new Avoid.Rectangle(rp1, rp2);
+				shapeRefs[v.id] = new Avoid.ShapeRef(router, rect);
+				rect.delete();
+				rp1.delete();
+				rp2.delete();
 			}
 
-			out[conns[i].id] = wps;
+			// ONE pin class per distinct candidate set on a shape, with
+			// non-exclusive pins, shared by every end that attaches there.
+			// Two pins at the SAME point in different classes break libavoid's
+			// orthogonal visibility sweep, which assumes no two breakpoints
+			// coincide (an assert in orthogonal.cpp, compiled out in release
+			// builds): the connector registered second got no route at all —
+			// every fan-out/fan-in on one fixed connection point, snap-point
+			// set or side mask. The key is order-free; the pins are registered
+			// in the first end's order.
+			function pinClassFor(vid, pins)
+			{
+				var parts = [];
+
+				for (var k = 0; k < pins.length; k++)
+				{
+					parts.push(pins[k].x + ',' + pins[k].y + ',' + pins[k].dir);
+				}
+
+				var key = vid + '\n' + parts.sort().join(' ');
+
+				if (pinClasses[key] == null)
+				{
+					pinClasses[key] = ++pinClass;
+
+					for (k = 0; k < pins.length; k++)
+					{
+						// Registers itself with the ShapeRef (freed with the
+						// router); the wrapper is only kept to make it shareable.
+						var pin = new Avoid.ShapeConnectionPin(shapeRefs[vid], pinClass,
+							pins[k].x, pins[k].y, true, 0, pins[k].dir);
+						pin.setExclusive(false);
+					}
+				}
+
+				return pinClasses[key];
+			}
+
+			// An endpoint is FLOATING (ConnEnd at the shape centre) unless it
+			// has candidate pins (endPins): a fixed connection point — a
+			// directed pin makes the route leave/enter the anchor
+			// perpendicular to the shape edge instead of cutting through it —
+			// a snap-point set (draw.io's snapToPoint: the shape's declared
+			// connection points) or a side MASK (the legacy mxGraph
+			// portConstraint vocabulary). A set's pins share one class, so
+			// libavoid picks the anchor (side and position) that routes best;
+			// ends sharing a class share its pins and nudging separates their
+			// corridors, like the render-time router spreading floating
+			// attaches.
+			function makeEnd(vid, b, pins, freePoint)
+			{
+				// Dangling end: no vertex bounds, just a free point (the edge's
+				// unconnected endpoint). Route to a plain Point ConnEnd — no shape,
+				// no direction — exactly as the warm-session drag preview does, so a
+				// committed edge with an unconnected end matches its live preview.
+				if (b == null)
+				{
+					var dp = new Avoid.Point(freePoint.x, freePoint.y);
+					var dce = new Avoid.ConnEnd(dp);
+					dp.delete();
+					return dce;
+				}
+
+				if (pins != null && shapeRefs[vid] != null)
+				{
+					return new Avoid.ConnEnd(shapeRefs[vid], pinClassFor(vid, pins));
+				}
+
+				// Free the temporary centre Point (copied into the ConnEnd); the
+				// ConnEnd itself is freed by the ConnRef caller below.
+				var cp = new Avoid.Point(b.x + b.w / 2, b.y + b.h / 2);
+				var ce = new Avoid.ConnEnd(cp);
+				cp.delete();
+
+				return ce;
+			}
+
+			// Wrap a stub tip as a routing checkpoint. Checkpoint copies the Point
+			// and the vector copies the Checkpoint — free both embind wrappers.
+			function addCheckpoint(vec, p)
+			{
+				if (p != null)
+				{
+					var pt = new Avoid.Point(p.x, p.y);
+					var cp = new Avoid.Checkpoint(pt);
+					vec.push_back(cp);
+					cp.delete();
+					pt.delete();
+				}
+			}
+
+			var conns = [];
+
+			for (i = 0; i < batch.length; i++)
+			{
+				var e = batch[i];
+
+				if (e == null)
+				{
+					continue;
+				}
+
+				var sb = bounds[e.source];
+				var tb = bounds[e.target];
+
+				// An end is either a known vertex (sb/tb) or a dangling free point
+				// (e.sourcePoint / e.targetPoint, absolute coords) for an unconnected
+				// endpoint. Skip only when an end is neither.
+				if ((sb == null && e.sourcePoint == null) ||
+					(tb == null && e.targetPoint == null))
+				{
+					continue;
+				}
+
+				// Self-loops are out of scope: obstacle avoidance between identical
+				// endpoints is meaningless and the orthogonal router degenerates to
+				// a buffer-sized hook beside the shape. Skipping leaves the caller's
+				// loop styling and waypoints untouched (an edge with no route entry
+				// is never written), e.g. draw.io's inner-loop-waypoint self-loops.
+				if (e.source != null && e.source === e.target)
+				{
+					continue;
+				}
+
+				var sPins = (sb != null) ? AvoidRouting.endPins(sb,
+					e.sourceConstraint, e.sourceSides, e.sourcePoints) : null;
+				var tPins = (tb != null) ? AvoidRouting.endPins(tb,
+					e.targetConstraint, e.targetSides, e.targetPoints) : null;
+
+				// ConnRef copies the ConnEnds, so free them after construction
+				// (they are not owned by the router).
+				var se = makeEnd(e.source, sb, sPins, e.sourcePoint);
+				var de = makeEnd(e.target, tb, tPins, e.targetPoint);
+				var conn = new Avoid.ConnRef(router, se, de);
+				se.delete();
+				de.delete();
+
+				// Jetty stubs: force the route through a checkpoint jetty px
+				// outward of each constrained anchor, so the first/last segment is
+				// at least that long. Capped per end to the clearance the terminal
+				// pair's gap allows along the stub's axis (cappedJetty). Skipped
+				// for ends where there is nothing to enforce (jettyStub), and for
+				// the whole edge when the anchors are closer than the summed
+				// stubs — the same too-short guard as mxEdgeStyle.OrthConnector —
+				// so a short edge isn't forced to double back through its
+				// checkpoints. The stubs are computed here but requested LAZILY
+				// after the first solve (see below).
+				var sourceJetty = AvoidRouting.cappedJetty(e.sourceJetty, e.sourceConstraint, sb, tb);
+				var targetJetty = AvoidRouting.cappedJetty(e.targetJetty, e.targetConstraint, tb, sb);
+				var sa = anchor(sb, e.sourceConstraint, e.sourcePoint);
+				var ta = anchor(tb, e.targetConstraint, e.targetPoint);
+
+				// A pinned anchor buried inside ANOTHER obstacle (a shape dragged
+				// over the terminal) puts the whole route into libavoid's escape /
+				// degenerate mode: checkpoints on such a route are unreachable and
+				// libavoid warns ("skipping checkpoint") for EVERY end — including
+				// tips in perfectly clear space — before discarding them. Skip BOTH
+				// stubs for the edge instead (verified against the WASM: same
+				// route, no console noise).
+				var buried = (e.sourceConstraint != null &&
+						AvoidRouting.insideAny(sa.x, sa.y, vertices)) ||
+					(e.targetConstraint != null &&
+						AvoidRouting.insideAny(ta.x, ta.y, vertices));
+
+				var scp = buried ? null :
+					AvoidRouting.jettyStub(e.sourceConstraint, sourceJetty, sb, vertices, clearance);
+				var tcp = buried ? null :
+					AvoidRouting.jettyStub(e.targetConstraint, targetJetty, tb, vertices, clearance);
+
+				if (scp != null || tcp != null)
+				{
+					var dx = ta.x - sa.x;
+					var dy = ta.y - sa.y;
+					var total = ((scp != null) ? sourceJetty : 0) +
+						((tcp != null) ? targetJetty : 0);
+
+					if (dx * dx + dy * dy < total * total)
+					{
+						scp = null;
+						tcp = null;
+					}
+				}
+
+				conns.push({edge: e, conn: conn, scp: scp, tcp: tcp,
+					sourceJetty: sourceJetty, targetJetty: targetJetty,
+					sourcePins: absolutePins(sb, sPins),
+					targetPins: absolutePins(tb, tPins)});
+			}
+
+			if (conns.length === 0)
+			{
+				router.delete();
+				return [];
+			}
+
+			router.processTransaction();
+
+			// LAZY jetty enforcement: the first solve runs WITHOUT the stub
+			// checkpoints; they are requested only for edges whose natural route
+			// violates a jetty minimum, and the transaction re-processed once. A
+			// checkpoint is a hard point the route must touch: when libavoid
+			// TURNS at one instead of crossing it mid-segment, the adjacent bend
+			// is pinned at the stub tip and nudging cannot center the segment in
+			// its channel — lopsided lead-outs (e.g. 30/10 on one edge next to a
+			// centered 20/20 twin) on routes that met the minimum for free.
+			// Enforcing lazily keeps the nudged, evenly distributed route
+			// wherever it already satisfies the jetty, and falls back to the
+			// checkpointed solve only where it does not. A connector without a
+			// route gets no checkpoints: they cannot give it one, only
+			// "skipping checkpoint" warnings.
+			var dirty = false;
+
+			for (i = 0; i < conns.length; i++)
+			{
+				var c = conns[i];
+
+				if (c.scp == null && c.tcp == null)
+				{
+					continue;
+				}
+
+				// 0.5px tolerance: sub-pixel misses vanish in the output rounding
+				// and do not warrant pinning the route to the checkpoints.
+				var r0 = readRoute(c.conn);
+
+				if (!AvoidRouting.isFallbackRoute(r0, c.sourcePins, c.targetPins) &&
+					((c.scp != null && endSegment(r0, true) < c.sourceJetty - 0.5) ||
+					(c.tcp != null && endSegment(r0, false) < c.targetJetty - 0.5)))
+				{
+					// In route order (source first); setRoutingCheckpoints copies
+					// the vector, so free the wrapper.
+					var cps = new Avoid.CheckpointVector();
+					addCheckpoint(cps, c.scp);
+					addCheckpoint(cps, c.tcp);
+					c.conn.setRoutingCheckpoints(cps);
+					cps.delete();
+					dirty = true;
+				}
+			}
+
+			if (dirty)
+			{
+				router.processTransaction();
+			}
+
+			var failed = [];
+
+			for (i = 0; i < conns.length; i++)
+			{
+				var pts = readRoute(conns[i].conn);
+
+				if (AvoidRouting.isFallbackRoute(pts, conns[i].sourcePins, conns[i].targetPins))
+				{
+					failed.push(conns[i].edge);
+					continue;
+				}
+
+				var wps = [];
+
+				for (var k = 1; k < pts.length - 1; k++)
+				{
+					if (collinear(pts[k - 1], pts[k], pts[k + 1]))
+					{
+						continue;
+					}
+
+					wps.push({x: Math.round(pts[k].x), y: Math.round(pts[k].y)});
+				}
+
+				out[conns[i].edge.id] = wps;
+			}
+
+			router.delete();
+			return failed;
 		}
 
-		router.delete();
+		// A connector libavoid found NO route for is retried on its own with
+		// the clearance halved, down to 2px: typically a pinned end faces a
+		// gap narrower than twice the buffer (a label or marker placed a few
+		// px from the shape), which the buffered obstacles close. Only the
+		// failed connectors are re-solved — the others keep the configured
+		// clearance — so a retried route is not nudged against the rest,
+		// like the editor's per-buffer buckets. Whatever still fails has no
+		// entry: callers leave such an edge as authored instead of writing
+		// the fallback's straight line over its waypoints.
+		var failed = solve(edges, buffer);
+
+		for (var retry = Math.floor(buffer / 2); failed.length > 0 && retry >= 2;
+			retry = Math.floor(retry / 2))
+		{
+			failed = solve(failed, retry);
+		}
+
 		return out;
 	};
 
