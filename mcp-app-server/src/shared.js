@@ -6518,6 +6518,27 @@ function validateDiagramXml(xml)
 
 // ── Shape search ── imported from ../../shared/shape-search.js (buildTagMap, searchShapes)
 
+// The tag map over the ~10,000-shape index, built once per index rather than
+// once per session: every new MCP session gets its own server, and building
+// the map costs tens of milliseconds of CPU plus a full copy in memory. On
+// Workers that ran on every initialize inside the session Durable Objects,
+// which overloaded them at ~20 new sessions per second (2026-09-30). The map
+// is read-only after the build, so all sessions can share it.
+var tagMapCache = new WeakMap();
+
+function getTagMap(shapeIndex)
+{
+  var tagMap = tagMapCache.get(shapeIndex);
+
+  if (tagMap == null)
+  {
+    tagMap = buildTagMap(shapeIndex);
+    tagMapCache.set(shapeIndex, tagMap);
+  }
+
+  return tagMap;
+}
+
 // ── Fallback for clients without an MCP Apps UI ──────────────────────────────
 
 /**
@@ -6842,7 +6863,7 @@ export function createServer(html, options = {})
 
   if (shapeIndex && shapeIndex.length > 0)
   {
-    var tagMap = buildTagMap(shapeIndex);
+    var tagMap = getTagMap(shapeIndex);
 
     registerAppTool(
       server,

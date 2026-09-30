@@ -1,8 +1,9 @@
 /**
  * Cloudflare Workers entry point for the draw.io MCP App server.
  *
- * Uses 4 Durable Objects to manage MCP sessions, sharded by session ID.
- * This spreads memory across multiple DOs while keeping costs low.
+ * Uses NUM_SHARDS Durable Objects to manage MCP sessions, sharded by session
+ * ID. This spreads memory and request load across multiple DOs while keeping
+ * costs low.
  *
  * Pre-requisite: run `node src/build-html.js` to generate src/generated-html.js.
  * Wrangler's [build] command does this automatically before bundling.
@@ -78,13 +79,13 @@ export class MCPSessionManager
       const shardName = request.headers.get("x-shard-name") || "shard-0";
       const shardIndex = parseInt(shardName.split("-")[1], 10) || 0;
 
-      // Generate UUIDs until we get one whose first hex char maps to this shard.
-      // On average takes NUM_SHARDS attempts (4), so very fast.
+      // Generate UUIDs until we get one that maps to this shard. On average
+      // takes NUM_SHARDS attempts, so very fast.
       do
       {
         sessionId = crypto.randomUUID();
       }
-      while (parseInt(sessionId.charAt(0), 16) % NUM_SHARDS !== shardIndex);
+      while (getShardIndex(sessionId) !== shardIndex);
     }
 
     // Get or create session.
@@ -342,13 +343,29 @@ export class MCPSessionManager
 }
 
 /**
- * Number of Durable Object shards to spread sessions across.
- * Sessions are routed to a shard based on the first hex char of the session ID.
+ * Number of Durable Object shards to spread sessions across. A DO handles its
+ * requests one at a time, so this is also the server's concurrency: 4 shards
+ * overloaded ("Durable Object is overloaded") at ~20 requests per second on
+ * 2026-09-30. Sessions are routed to a shard based on the first hex char of
+ * the session ID, so this can be at most 16. Changing it moves existing
+ * sessions to another shard, where they are re-created transparently (see the
+ * stale-session path in MCPSessionManager.fetch).
  */
-const NUM_SHARDS = 4;
+const NUM_SHARDS = 16;
 
 /**
- * Pick a shard name (0..NUM_SHARDS-1) from a session ID.
+ * The shard index (0..NUM_SHARDS-1) of a session ID: its first hex char.
+ * Anything that isn't a hex char lands on shard 0.
+ */
+function getShardIndex(sessionId)
+{
+  const index = parseInt(sessionId.charAt(0), 16);
+
+  return isNaN(index) ? 0 : index % NUM_SHARDS;
+}
+
+/**
+ * Pick a shard name from a session ID.
  * New sessions (no session ID header) get a random shard.
  */
 function getShardName(sessionId)
@@ -358,11 +375,7 @@ function getShardName(sessionId)
     return "shard-" + Math.floor(Math.random() * NUM_SHARDS);
   }
 
-  // Use first hex char of the UUID to deterministically pick a shard
-  const firstChar = sessionId.charAt(0);
-  const index = parseInt(firstChar, 16) % NUM_SHARDS;
-
-  return "shard-" + index;
+  return "shard-" + getShardIndex(sessionId);
 }
 
 /**
