@@ -2,13 +2,15 @@
 //
 // The app server runs libavoid in the browser against the live mxGraph model.
 // The tool server has no renderer — it just compresses XML into a #create= URL
-// — so here we parse the mxGraphModel XML, run the SAME shared routing core
-// (AvoidRouting.computeRoutes), and write the resulting waypoints back into
-// the XML before it is compressed.
+// — so here we run the SAME shared routing core (AvoidRouting.computeRoutes)
+// against the headless model shared/mx-xml.js parses out of the XML, and let
+// it write the resulting waypoints back before the XML is compressed.
 //
-// Parsing is a deliberately small, targeted pass over `<mxCell>` / `<mxGeometry>`
-// (draw.io XML is regular and the LLM is asked to emit well-formed XML with
-// escaped attribute values). Anything unexpected -> return the original XML
+// Every page (`<mxGraphModel>`) is routed on its own: cell ids and obstacles
+// belong to one page, and a page never sees another page's shapes — the
+// same guarantee the ELK layout pass and the normalization get from
+// transformPages. Only the routed edges are rewritten; every other byte of
+// the document stays as authored. Anything unexpected leaves that page
 // unrouted, so a parse hiccup never produces a broken diagram, only an
 // un-routed one.
 
@@ -101,54 +103,54 @@ function getAvoid()
   return avoidPromise;
 }
 
-// Parse double-quoted attributes from a tag's attribute string into a map.
-function parseAttrs(s)
+// shared/mx-model.js + shared/mx-xml.js, copied into src/ by copy-shared —
+// same local-copy-then-repo import as elk-pass.js, so an in-repo run works
+// without the copy. Memoized.
+let sharedPromise = null;
+
+function loadShared()
 {
-  var attrs = {};
-  var re = /([\w:.-]+)\s*=\s*"([^"]*)"/g;
-  var m;
-
-  while ((m = re.exec(s)) !== null)
+  if (!sharedPromise)
   {
-    attrs[m[1]] = m[2];
-  }
-
-  return attrs;
-}
-
-// Find all <mxCell> blocks (self-closing or with a body).
-function parseCells(xml)
-{
-  var cells = [];
-  var re = /<mxCell\b([^>]*?)(\/>|>([\s\S]*?)<\/mxCell>)/g;
-  var m;
-
-  while ((m = re.exec(xml)) !== null)
-  {
-    cells.push({
-      full: m[0],
-      rawAttrs: m[1],
-      attrs: parseAttrs(m[1]),
-      selfClosing: m[2] === "/>",
-      body: m[3] || ""
+    sharedPromise = Promise.all([
+      import("./mx-model.js").catch(function()
+      {
+        return import("../../shared/mx-model.js");
+      }),
+      import("./mx-xml.js").catch(function()
+      {
+        return import("../../shared/mx-xml.js");
+      }),
+    ]).then(function(mods)
+    {
+      return { model: mods[0], xml: mods[1] };
     });
   }
 
-  return cells;
+  return sharedPromise;
 }
 
-// Pull the first <mxGeometry> tag's attributes from a cell body.
-function parseGeometry(body)
+// Absolute offset of a cell's frame: the summed geometries of its vertex
+// ancestors (a container's children are positioned relative to it).
+function parentOffset(model, cell)
 {
-  var m = /<mxGeometry\b([^>]*?)\/?>/.exec(body);
-  if (m == null) return null;
-  return parseAttrs(m[1]);
-}
+  var x = 0, y = 0;
+  var p = model.getParent(cell);
 
-function num(v)
-{
-  var n = parseFloat(v);
-  return isNaN(n) ? 0 : n;
+  while (p != null && model.isVertex(p))
+  {
+    var geo = model.getGeometry(p);
+
+    if (geo != null)
+    {
+      x += geo.x;
+      y += geo.y;
+    }
+
+    p = model.getParent(p);
+  }
+
+  return { x: x, y: y };
 }
 
 // Parse an mxGraph style string ("key=value;key2=value2;…") into a map.
@@ -252,58 +254,13 @@ function setEdgeStyle(style)
   return kept.join(";") + ";";
 }
 
-// Replace the style="..." attribute in a raw attribute string (or append it).
-function withStyle(rawAttrs, newStyle)
-{
-  var escaped = newStyle.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-
-  if (/\bstyle\s*=\s*"/.test(rawAttrs))
-  {
-    return rawAttrs.replace(/\bstyle\s*=\s*"[^"]*"/, 'style="' + escaped + '"');
-  }
-
-  return rawAttrs + ' style="' + escaped + '"';
-}
-
-// Rebuild an edge's <mxCell> block with the routed waypoints + orthogonal style.
-function buildEdgeBlock(cell, wps)
-{
-  var rawAttrs = withStyle(cell.rawAttrs, setEdgeStyle(cell.attrs.style));
-
-  // Preserve the existing geometry's attributes (relative, as, label x/y),
-  // defaulting to a standard relative edge geometry.
-  var geoAttrs = parseGeometry(cell.body) || {};
-  if (geoAttrs.relative == null) geoAttrs.relative = "1";
-  geoAttrs.as = "geometry";
-
-  var geoAttrStr = Object.keys(geoAttrs).map(function(k)
-  {
-    return k + '="' + geoAttrs[k] + '"';
-  }).join(" ");
-
-  var pointsXml = wps.map(function(p)
-  {
-    return '<mxPoint x="' + p.x + '" y="' + p.y + '" />';
-  }).join("");
-
-  var geo = "<mxGeometry " + geoAttrStr + ">" +
-    "<Array as=\"points\">" + pointsXml + "</Array>" +
-    "</mxGeometry>";
-
-  // Body minus any existing geometry, plus the new one.
-  var body = cell.body
-    .replace(/<mxGeometry\b[^>]*?\/>/g, "")
-    .replace(/<mxGeometry\b[\s\S]*?<\/mxGeometry>/g, "");
-
-  return "<mxCell" + rawAttrs + ">" + body + geo + "</mxCell>";
-}
-
 /**
- * Route the edges of a draw.io XML document with libavoid. Returns the XML with
- * orthogonal obstacle-avoiding waypoints written onto each edge, or the
- * original XML unchanged if there's nothing to route or anything goes wrong.
+ * Route the edges of a draw.io XML document with libavoid, one page at a
+ * time. Returns the XML with orthogonal obstacle-avoiding waypoints written
+ * onto each edge, or the original XML unchanged if there's nothing to route
+ * or anything goes wrong.
  *
- * @param {string} xml
+ * @param {string} xml - mxGraphModel or mxfile XML
  * @returns {Promise<string>}
  */
 export async function routeXml(xml)
@@ -312,102 +269,105 @@ export async function routeXml(xml)
   {
     if (typeof xml !== "string" || xml.indexOf("<mxCell") === -1) return xml;
 
-    // The routing core module is tiny — load it up front (the expensive wasm
-    // load stays deferred until edges are actually found below).
+    // All three are memoized per process. The routing core is tiny; the
+    // wasm is the expensive one, but routing was explicitly asked for.
     var Routing = await getRouting();
+    var Avoid = await getAvoid();
+    var shared = await loadShared();
 
-    var cells = parseCells(xml);
-    var byId = {};
-    var i;
-
-    for (i = 0; i < cells.length; i++)
+    return shared.xml.transformPages(xml, function(graph)
     {
-      var c = cells[i];
-      if (c.attrs.id == null) continue;
-      c.geo = parseGeometry(c.body);
-      byId[c.attrs.id] = c;
+      routeGraph(graph, Routing, Avoid, shared.model);
+    }).xml;
+  }
+  catch (e)
+  {
+    // Never break the diagram — fall back to the un-routed XML.
+    return xml;
+  }
+}
+
+// Routes one page's model: every vertex is an obstacle, every edge between
+// two vertices gets a route, in absolute model coordinates. Mirrors
+// routeWithLibavoid in the app server. The write-back picks up the edges'
+// new geometries and styles; a page that throws stays as authored
+// (transformPages' own error handling). `mx` is the mx-model module.
+function routeGraph(graph, Routing, Avoid, mx)
+{
+  var model = graph.getModel();
+  var vertices = [];
+  var edges = [];
+  var id;
+
+  // mxGraphModel.cells: every cell by id, added in tree order. The editor
+  // and the app server collect with for-in over that map, and libavoid's
+  // nudging depends on the order shapes and connectors are registered in,
+  // so the same map gives the same routes.
+  var cells = Object.create(null);
+
+  (function add(cell)
+  {
+    cells[cell.id] = cell;
+
+    for (var i = 0; i < model.getChildCount(cell); i++)
+    {
+      add(model.getChildAt(cell, i));
     }
+  })(model.getRoot());
 
-    // Absolute offset of a cell's parent chain (sum of ancestor vertex geos).
-    function parentOffset(id)
+  for (id in cells)
+  {
+    var cell = cells[id];
+
+    if (model.isVertex(cell))
     {
-      var x = 0, y = 0;
-      var cur = byId[id];
-      var seen = {};
+      var geo = model.getGeometry(cell);
 
-      while (cur != null && cur.attrs.parent != null && !seen[cur.attrs.parent])
+      if (geo != null && geo.width > 0 && geo.height > 0)
       {
-        seen[cur.attrs.parent] = true;
-        var par = byId[cur.attrs.parent];
-        if (par == null || par.attrs.vertex !== "1" || par.geo == null) break;
-        x += num(par.geo.x);
-        y += num(par.geo.y);
-        cur = par;
+        var off = parentOffset(model, cell);
+        vertices.push({ id: id, x: geo.x + off.x, y: geo.y + off.y,
+          w: geo.width, h: geo.height });
       }
-
-      return { x: x, y: y };
     }
-
-    var vertices = [];
-    var edges = [];
-    var id;
-
-    for (id in byId)
+    else if (model.isEdge(cell))
     {
-      var cell = byId[id];
+      var s = model.getTerminal(cell, true);
+      var t = model.getTerminal(cell, false);
 
-      if (cell.attrs.vertex === "1" && cell.geo != null)
-      {
-        var off = parentOffset(id);
-        var w = num(cell.geo.width);
-        var h = num(cell.geo.height);
-        if (w > 0 && h > 0)
-        {
-          vertices.push({ id: id, x: num(cell.geo.x) + off.x, y: num(cell.geo.y) + off.y, w: w, h: h });
-        }
-      }
-      else if (cell.attrs.edge === "1" && cell.attrs.source != null && cell.attrs.target != null)
+      if (model.isVertex(s) && model.isVertex(t))
       {
         // Fixed connection points (exitX/entryX…) route via directed pins and
         // the per-end jettySize gives their minimum stub — like the editor.
-        var sm = parseStyleMap(cell.attrs.style);
-        edges.push({ id: id, source: cell.attrs.source, target: cell.attrs.target,
+        var sm = parseStyleMap(model.getStyle(cell));
+        edges.push({ id: id, source: s.id, target: t.id,
           sourceConstraint: fixedConstraint(Routing, sm, true),
           targetConstraint: fixedConstraint(Routing, sm, false),
           sourceJetty: jettyFor(sm, true),
           targetJetty: jettyFor(sm, false) });
       }
     }
-
-    if (edges.length === 0) return xml;
-
-    var Avoid = await getAvoid();
-    var routes = Routing.computeRoutes(Avoid, vertices, edges);
-    var routedIds = Object.keys(routes);
-    if (routedIds.length === 0) return xml;
-
-    var out = xml;
-
-    for (i = 0; i < routedIds.length; i++)
-    {
-      var eid = routedIds[i];
-      var edgeCell = byId[eid];
-      var eOff = parentOffset(eid);
-      var wps = routes[eid].map(function(p)
-      {
-        return { x: p.x - eOff.x, y: p.y - eOff.y };
-      });
-
-      var block = buildEdgeBlock(edgeCell, wps);
-      // split/join (not replace) so '$' in the replacement isn't special.
-      out = out.split(edgeCell.full).join(block);
-    }
-
-    return out;
   }
-  catch (e)
+
+  if (edges.length === 0) return;
+
+  var routes = Routing.computeRoutes(Avoid, vertices, edges);
+
+  for (id in routes)
   {
-    // Never break the diagram — fall back to the un-routed XML.
-    return xml;
+    var edge = cells[id];
+    var eOff = parentOffset(model, edge);
+    var eGeo = model.getGeometry(edge);
+
+    // The routes are absolute; waypoints live in the edge's parent frame.
+    eGeo = (eGeo != null) ? eGeo.clone() : new mx.MxGeometry();
+    eGeo.relative = true;
+    eGeo.points = routes[id].map(function(p)
+    {
+      return new mx.MxPoint(p.x - eOff.x, p.y - eOff.y);
+    });
+
+    model.setGeometry(edge, eGeo);
+    model.setStyle(edge, setEdgeStyle(model.getStyle(edge)));
   }
 }

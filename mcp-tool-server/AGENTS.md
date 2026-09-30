@@ -7,7 +7,7 @@ The original draw.io MCP server. Opens diagrams directly in the draw.io editor v
 | File | Purpose |
 |------|---------|
 | `src/index.js` | Single-file server (stdio transport, vanilla JS, no build step) |
-| `src/libavoid-pass.js` | Server-side libavoid edge-routing pass for `open_drawio_xml` (`routing: "libavoid"`) — parses the mxGraphModel XML, runs the vendored routing core (`AvoidRouting.computeRoutes`), writes waypoints back |
+| `src/libavoid-pass.js` | Server-side libavoid edge-routing pass for `open_drawio_xml` (`routing: "libavoid"`) — runs the routing core (`AvoidRouting.computeRoutes`) over each page's model through `mx-xml.js`'s `transformPages`, writes waypoints back. Covered by `test/libavoid-pass.test.js` |
 | `src/elk-pass.js` | Server-side ELK layout pass for `open_drawio_xml` (`postLayout: "elk"`) — drives the drawio-elk `ElkLayout` bridge over the model `mx-xml.js` parses. Covered by `test/elk-pass.test.js` |
 | `src/mx-model.js` | Copy of `shared/mx-model.js` (copy-shared): headless mxGraph model — cells, geometry, `getCellStyle`, the ancestry/reparenting methods (`updateEdgeParents`), `normalizeModel`, the `mxPoint`/`mxConstants`/`mxUtils` globals. The slice of mxGraph the drawio-elk bridge and the edge-parent normalization touch, so both run unchanged without a renderer |
 | `src/mx-xml.js` | Copy of `shared/mx-xml.js` (copy-shared): mxGraphModel XML ↔ that model. `transformPages(xml, fn)` parses each page, hands the transform a graph, and writes back ONLY the cells it changed |
@@ -16,7 +16,7 @@ The original draw.io MCP server. Opens diagrams directly in the draw.io editor v
 | `src/cdn-cache.js` | ETag-revalidated per-user disk cache for the three CDN sources (`ROUTING_CORE`, `ELK_BUNDLE`, `SHAPE_INDEX`), atomic single-artifact writes |
 | `src/shape-index.js` | Loads the `search_shapes` index through `cdn-cache.js`; the JSON parse doubles as the cache validator |
 | `src/mermaid-elk.js` | Copy of `shared/mermaid-elk.js` (copy-shared): the Mermaid ELK layout selector behind `open_drawio_mermaid`'s `postLayout`. Covered by `test/mermaid-elk.test.js` |
-| `src/pages.js` | Local `.drawio` file page access for `list_pages`/`get_page`/`set_page` — regex-scans `<diagram>` blocks (same tag-boundary technique as `libavoid-pass.js`), decompresses/compresses per-page with `pako` as needed. Covered by `test/pages.test.js` (`npm test`) |
+| `src/pages.js` | Local `.drawio` file page access for `list_pages`/`get_page`/`set_page` — regex-scans `<diagram>` blocks (same tag-boundary technique as `mx-xml.js`), decompresses/compresses per-page with `pako` as needed. Covered by `test/pages.test.js` (`npm test`) |
 | `vendor/libavoid/` | Vendored libavoid-js **node** build + `libavoid.wasm` (see its README). Loaded by path in plain Node — no inlining/base64 (that's the app server's sandbox concern) |
 
 ## Tools
@@ -39,7 +39,7 @@ Since there is no renderer here, `src/mx-model.js` provides the headless mxGraph
 
 The ~900 KB bundle is not vendored — `src/elk-engine.js` pulls it from `viewer.diagrams.net` through `src/cdn-cache.js` on first use (`DRAWIO_ELK_URL` overrides the source with a local build for testing an unreleased drawio-elk). Fails loudly, unlike routing: if the bundle can't be loaded the tool result says the layout didn't run, since an unlaid-out diagram is exactly what the caller asked to avoid. A parse problem still fails safe (the page comes back as authored).
 
-**`routing: "libavoid"`** (optional) runs an obstacle-avoiding orthogonal edge-routing pass server-side before the URL is built: vertices stay put, connectors are recomputed to route *around* shapes in clean right angles (draw.io's built-in router has no obstacle avoidance). The routing math is `AvoidRouting.computeRoutes` from the vendored `vendor/libavoid/libavoid-routing.js` — a verbatim copy of the canonical `drawio-dev js/libavoid-js/libavoid-routing.js`, identical to the app server's and the draw.io editor's. Fails safe — any parse/route issue returns the original XML unrouted.
+**`routing: "libavoid"`** (optional) runs an obstacle-avoiding orthogonal edge-routing pass server-side before the URL is built: vertices stay put, connectors are recomputed to route *around* shapes in clean right angles (draw.io's built-in router has no obstacle avoidance). The routing math is `AvoidRouting.computeRoutes` from the vendored `vendor/libavoid/libavoid-routing.js` — a verbatim copy of the canonical `drawio-dev js/libavoid-js/libavoid-routing.js`, identical to the app server's and the draw.io editor's. Like the other passes it runs through `mx-xml.js`'s `transformPages`, one `<mxGraphModel>` page at a time: cell ids and obstacles never cross pages ([#73](https://github.com/jgraph/drawio-mcp/pull/73) — two pages reusing ids used to get each other's routes, and a shape on one page used to be an obstacle on another), `<object>`/`<UserObject>`-wrapped cells route like plain ones, and only the routed edges are rewritten. Cells are collected in `mxGraphModel.cells` order, as in the editor and the app server, since libavoid's nudging depends on registration order. Fails safe — any parse/route issue leaves that page unrouted.
 
 ### `open_drawio_csv`
 
