@@ -5,13 +5,15 @@ compatibility_flags = ["nodejs_compat"]
 # workers.dev name is disabled in CF for production; keep it off
 workers_dev = false
 
-# The dash-managed route only covers mcp.draw.io/mcp* — /carousel/* needs
-# its own route or requests 522 against a nonexistent origin.
+# The dash-managed route only covers mcp.draw.io/mcp* — every other path the
+# Worker serves (/carousel/*, /health, ...) needs its own route or requests 522
+# against a nonexistent origin.
 routes = [
   { pattern = "mcp.draw.io/mcp*", zone_name = "draw.io" },
   { pattern = "mcp.draw.io/carousel/*", zone_name = "draw.io" },
   { pattern = "mcp.draw.io/.well-known/*", zone_name = "draw.io" },
-  { pattern = "mcp.draw.io/demo/*", zone_name = "draw.io" }
+  { pattern = "mcp.draw.io/demo/*", zone_name = "draw.io" },
+  { pattern = "mcp.draw.io/health", zone_name = "draw.io" }
 ]
 
 # OpenAI plugin-directory domain verification token, served verbatim at
